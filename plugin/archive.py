@@ -13,11 +13,13 @@ from pyrogram.types import Message
 
 from utils.db import get_db
 from utils.auth import approved_only
+from utils.fsub import force_sub
 
 log = logging.getLogger(__name__)
 
 
 @approved_only
+@force_sub
 async def archive_command(client: Client, message: Message):
     """List all episodes of a series from the archive."""
     parts = message.text.split(None, 1)
@@ -62,6 +64,7 @@ async def archive_command(client: Client, message: Message):
 
 
 @approved_only
+@force_sub
 async def series_command(client: Client, message: Message):
     """List all unique archived series."""
     db = get_db()

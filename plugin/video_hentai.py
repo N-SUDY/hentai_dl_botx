@@ -13,6 +13,7 @@ from pyrogram.types import (
 
 from api.hanime import get_streams, details
 from utils.auth import approved_only
+from utils.fsub import force_sub
 from utils.db import get_db
 from utils.logger import (
     log_download_start, log_download_progress, log_upload_complete,
@@ -25,6 +26,7 @@ log = logging.getLogger(__name__)
 # ── Stream link buttons ─────────────────────────────────────────────────
 
 @approved_only
+@force_sub
 async def hentailink(client: Client, callback_query: CallbackQuery):
     """Show streaming links (link_<slug> callback)."""
     slug = callback_query.data.split("_", 1)[1]
@@ -127,6 +129,7 @@ def _extract_series_name(slug: str) -> str:
 # ── Download handler ────────────────────────────────────────────────────
 
 @approved_only
+@force_sub
 async def hentaidl(client: Client, callback_query: CallbackQuery):
     """Download and send the video (dlt_<slug> callback)."""
     slug = callback_query.data.split("_", 1)[1]

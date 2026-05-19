@@ -1,70 +1,133 @@
-# Hentai DL Bot
+# 🎌 Hentai DL Bot
 
-A Telegram bot to search and download hentai videos.
+A powerful Telegram bot to search, stream, and download hentai videos directly to Telegram — with user management, channel archiving, force-subscribe, and broadcast features.
 
-## Features
+**Created by [Mr. Aman](https://t.me/Am_ankhan)**
 
-- `/start` — Welcome message with usage info
-- `/search <name>` — Search for hentai by name
-- Inline buttons for details, streaming links, and direct download
-- MongoDB caching for previously downloaded files
-- ffmpeg-based video downloading
+---
 
-## Requirements
+## ✨ Features
 
-- Python 3.10+
-- ffmpeg (system package)
-- MongoDB instance
-- Telegram API credentials
+- 🔍 **Search** — Find hentai by name via Hanime.tv API
+- 📺 **Stream Links** — Get direct streaming URLs in multiple qualities
+- ⬇️ **Download** — Download videos and receive them as Telegram documents
+- 💾 **Smart Caching** — Previously downloaded files are served instantly from cache
+- 📂 **Archive System** — Browse downloaded episodes by series
+- 📢 **Channel Archiving** — Automatically sends downloads to your main channel
+- 🔐 **User Approval System** — Request-based access with admin approve/reject
+- 🛡 **Admin Management** — Multi-admin support with owner privileges
+- 📋 **Force Subscribe** — Require users to join your channel before using the bot
+- 📣 **Broadcast** — Send announcements to all approved users
+- 📝 **Log Channel** — Track searches, downloads, and admin actions
+- 🖼 **Waifu Welcome** — Random waifu images on /start
 
-## Environment Variables
+---
 
-| Variable | Description |
+## 📖 Bot Commands
+
+### 👤 User Commands
+
+| Command | Description |
 |---|---|
-| `API_ID` | Telegram API ID from [my.telegram.org](https://my.telegram.org) |
-| `API_HASH` | Telegram API Hash |
-| `BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
-| `MONGO_URL` | MongoDB connection string |
-| `CACHE_CHANNEL` | Telegram channel/supergroup ID for file caching |
+| `/start` | Welcome message with bot info |
+| `/search <name>` | Search for hentai by name |
+| `/request` | Request access to use the bot |
+| `/archive <series>` | Browse archived episodes of a series |
+| `/series` | List all archived series |
 
-Copy `.env.example` to `.env` and fill in your values.
+### 🛡 Admin Commands
 
-## Local Setup
+| Command | Description |
+|---|---|
+| `/addadmin <user_id>` | Add a new admin |
+| `/removeadmin <user_id>` | Remove an admin (owner only) |
+| `/admins` | List all admins |
+| `/approve <user_id>` | Approve a user's access request |
+| `/reject <user_id>` | Reject a user's access request |
+| `/revoke <user_id>` | Revoke an approved user's access |
+| `/adduser <user_id>` | Directly approve a user without request |
+| `/removeuser <user_id>` | Remove an approved user |
+| `/users` | List all approved users |
+| `/pending` | View pending access requests with inline buttons |
+| `/broadcast <message>` | Send a message to all approved users |
 
-```bash
-pip install -r requirements.txt
-# Make sure ffmpeg is installed: apt install ffmpeg
-python app.py
-```
+### ⚙️ Settings Commands
 
-## Deploy to Railway
+| Command | Description |
+|---|---|
+| `/setlog <channel_id>` | Set the log channel for bot activity |
+| `/removelog` | Remove the log channel |
+| `/setchannel <channel_id>` | Set the main channel (archive + force-sub) |
+| `/removechannel` | Remove the main channel |
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template/new)
+---
 
-1. Click the button above or create a new project on [Railway](https://railway.app)
-2. Connect your GitHub repo
-3. Add the environment variables listed above
-4. Railway will auto-detect the `nixpacks.toml` and install ffmpeg
-5. Deploy!
+## 🚀 Deploy to Railway
 
-Railway config files included:
-- `railway.toml` — build & deploy settings
-- `nixpacks.toml` — ensures ffmpeg is available
-- `Procfile` — worker process definition
+### Step 1: Fork the Repository
 
-## Deploy to Heroku (Legacy)
+Fork this repo to your GitHub account.
 
-The `app.json` is kept for Heroku compatibility:
+### Step 2: Create a Railway Project
 
-[![Deploy to Heroku](https://img.shields.io/badge/Deploy%20To%20Heroku-black?style=for-the-badge&logo=heroku)](https://heroku.com/deploy)
+1. Go to [railway.app](https://railway.app)
+2. Click **"New Project"**
+3. Select **"Deploy from GitHub Repo"**
+4. Connect your GitHub account and select the forked repo
 
-## Tech Stack
+### Step 3: Add Environment Variables
 
-- [Pyrofork](https://github.com/Mayuri-Chan/pyrofork) — Modern Pyrogram fork (async)
-- [Motor](https://motor.readthedocs.io/) — Async MongoDB driver
-- [aiohttp](https://aiohttp.readthedocs.io/) — Async HTTP client
-- ffmpeg — Video processing
+Go to your service → **Variables** tab and add:
 
-## License
+| Variable | Description | Example |
+|---|---|---|
+| `API_ID` | Telegram API ID from [my.telegram.org](https://my.telegram.org) | `12345678` |
+| `API_HASH` | Telegram API Hash from [my.telegram.org](https://my.telegram.org) | `abcdef1234567890abcdef1234567890` |
+| `BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) | `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11` |
+| `MONGO_URL` | MongoDB connection string | `mongodb+srv://user:pass@cluster.mongodb.net/` |
 
-See [LICENSE](LICENSE).
+> 💡 **Get a free MongoDB:** Sign up at [MongoDB Atlas](https://www.mongodb.com/atlas) and create a free M0 cluster.
+
+### Step 4: Deploy
+
+Railway will automatically detect the `nixpacks.toml` configuration and install all dependencies including ffmpeg. Click **Deploy** and wait for the build to complete.
+
+### Step 5: First Start
+
+Send `/start` to your bot on Telegram. The **first user** to send `/start` automatically becomes the **owner** (super admin).
+
+---
+
+## 🛠 Post-Deploy Setup
+
+1. **Start the bot** — Send `/start` to become the owner
+2. **Create a Telegram channel** — This will be your archive/force-sub channel
+3. **Add the bot as admin** to that channel (needs permission to post and check members)
+4. **Set the main channel** — `/setchannel <channel_id>` (e.g., `/setchannel -1001234567890`)
+   - This enables **channel archiving** (downloads are forwarded here)
+   - This enables **force-subscribe** (users must join to use the bot)
+5. **Set the log channel** (optional) — `/setlog <channel_id>` to track bot activity
+6. **Add users** — Either `/adduser <user_id>` directly, or wait for users to `/request` access
+
+> 💡 **Finding channel IDs:** Forward a message from the channel to [@userinfobot](https://t.me/userinfobot) or use the `-100` prefix format.
+
+---
+
+## 🧰 Tech Stack
+
+- **[Pyrofork](https://github.com/Mayuri-Chan/pyrofork)** — Modern async Pyrogram fork for Telegram Bot API
+- **[Motor](https://motor.readthedocs.io/)** — Async MongoDB driver
+- **[aiohttp](https://aiohttp.readthedocs.io/)** — Async HTTP client
+- **[FFmpeg](https://ffmpeg.org/)** — Video processing and HLS stream downloading
+- **[MongoDB](https://www.mongodb.com/)** — Database for users, cache, config, and archives
+- **[Hanime.tv API](https://hanime.tv/)** — Video search and streaming data
+
+---
+
+## 📄 License
+
+See [LICENSE](LICENSE) for details.
+
+---
+
+**⚡ Powered by Hanime.tv API & FFmpeg | 👨‍💻 Created by [Mr. Aman](https://t.me/Am_ankhan)**

@@ -21,6 +21,7 @@ from plugin.channels import (
     setlog_command, removelog_command, setchannel_command, removechannel_command,
 )
 from plugin.archive import archive_command, series_command
+from plugin.broadcast import broadcast_command
 
 # ── Logging ─────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -93,6 +94,9 @@ async def main():
     # Archive commands
     bot.add_handler(MessageHandler(archive_command, filters.command("archive")))
     bot.add_handler(MessageHandler(series_command, filters.command("series")))
+
+    # Broadcast command
+    bot.add_handler(MessageHandler(broadcast_command, filters.command("broadcast")))
 
     # ── Callback query handlers ─────────────────────────────────────────
     bot.add_handler(CallbackQueryHandler(infohentai, filters.regex(r"^info_")))

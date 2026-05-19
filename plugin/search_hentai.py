@@ -9,12 +9,14 @@ from pyrogram.types import (
 
 from api.hanime import search
 from utils.auth import approved_only
+from utils.fsub import force_sub
 from utils.logger import log_search
 
 log = logging.getLogger(__name__)
 
 
 @approved_only
+@force_sub
 async def hentaisearch(client: Client, message: Message):
     """Handle /search <query> command."""
     parts = message.text.split(None, 1)

@@ -9,11 +9,13 @@ from pyrogram.types import (
 
 from api.hanime import details
 from utils.auth import approved_only
+from utils.fsub import force_sub
 
 log = logging.getLogger(__name__)
 
 
 @approved_only
+@force_sub
 async def infohentai(client: Client, callback_query: CallbackQuery):
     """Show details for a selected hentai (info_<slug> callback)."""
     slug = callback_query.data.split("_", 1)[1]
