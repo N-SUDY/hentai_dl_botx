@@ -1,7 +1,9 @@
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import aiohttp
 from pyrogram import Client
@@ -21,6 +23,14 @@ from utils.logger import (
 )
 
 log = logging.getLogger(__name__)
+
+# Path to N_m3u8DL-RE binary (bundled in repo)
+N_M3U8DL_RE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "binary", "N_m3u8DL-RE")
+
+# Download timeout in seconds
+DOWNLOAD_TIMEOUT = 300  # 5 minutes max per download
+FFMPEG_TIMEOUT = 240    # 4 minutes for ffmpeg
+N_M3U8DL_TIMEOUT = 180  # 3 minutes for N_m3u8DL-RE (faster)
 
 
 # ── Stream link buttons ─────────────────────────────────────────────────
@@ -77,24 +87,114 @@ async def hentailink(client: Client, callback_query: CallbackQuery):
 
 # ── Download helpers ────────────────────────────────────────────────────
 
-async def _download_direct(url: str, filename: str) -> bool:
-    """Download a file directly via aiohttp."""
+async def _download_direct(url: str, filename: str, progress_cb=None) -> bool:
+    """
+    Download a file directly via aiohttp with timeout and progress.
+    Uses larger chunks and connection pooling for speed.
+    """
     try:
-        timeout = aiohttp.ClientTimeout(total=300)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        timeout = aiohttp.ClientTimeout(total=DOWNLOAD_TIMEOUT, connect=10, sock_read=30)
+        connector = aiohttp.TCPConnector(limit=5, force_close=False)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "*/*",
+        }
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector, headers=headers) as session:
             async with session.get(url) as resp:
                 resp.raise_for_status()
+                total = resp.content_length or 0
+                downloaded = 0
+                last_progress = 0
+
                 with open(filename, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(1024 * 64):
+                    # Use 256KB chunks for faster throughput
+                    async for chunk in resp.content.iter_chunked(256 * 1024):
                         f.write(chunk)
+                        downloaded += len(chunk)
+
+                        # Report progress every 10%
+                        if progress_cb and total > 0:
+                            pct = int(downloaded * 100 / total)
+                            if pct >= last_progress + 10:
+                                last_progress = pct
+                                await progress_cb(pct)
+
         return True
+    except asyncio.TimeoutError:
+        log.error("Direct download timed out for url=%s", url)
+        return False
     except Exception:
         log.exception("Direct download failed for url=%s", url)
         return False
 
 
-async def _download_hls(url: str, filename: str) -> bool:
-    """Download an HLS stream via ffmpeg."""
+async def _download_n_m3u8dl(url: str, filename: str) -> bool:
+    """
+    Download HLS stream using N_m3u8DL-RE (much faster than ffmpeg for HLS).
+    Uses multi-threaded downloading.
+    """
+    if not os.path.exists(N_M3U8DL_RE):
+        log.warning("N_m3u8DL-RE binary not found at %s", N_M3U8DL_RE)
+        return False
+
+    try:
+        # N_m3u8DL-RE with optimized settings:
+        # --thread-count 8: parallel segment downloads
+        # --download-retry-count 3: retry failed segments
+        # --tmp-dir: use /tmp for speed
+        process = await asyncio.create_subprocess_exec(
+            N_M3U8DL_RE,
+            url,
+            "--save-name", Path(filename).stem,
+            "--save-dir", ".",
+            "--thread-count", "8",
+            "--download-retry-count", "3",
+            "--tmp-dir", "/tmp",
+            "--no-log",
+            "--auto-select",
+            "-H", "Referer: https://hanime.tv/",
+            "-H", "Origin: https://hanime.tv",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        try:
+            _, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=N_M3U8DL_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            log.error("N_m3u8DL-RE timed out for %s, killing process", url)
+            process.kill()
+            await process.wait()
+            return False
+
+        if process.returncode != 0:
+            log.error("N_m3u8DL-RE failed (rc=%d): %s", process.returncode, stderr.decode(errors="replace")[-500:])
+            return False
+
+        # N_m3u8DL-RE may output with different extension, find the file
+        stem = Path(filename).stem
+        for ext in [".mp4", ".mkv", ".ts"]:
+            candidate = stem + ext
+            if os.path.exists(candidate) and os.path.getsize(candidate) > 0:
+                if candidate != filename:
+                    os.rename(candidate, filename)
+                return True
+
+        # Check if output file exists directly
+        if os.path.exists(filename) and os.path.getsize(filename) > 0:
+            return True
+
+        log.error("N_m3u8DL-RE completed but output file not found for %s", url)
+        return False
+
+    except Exception:
+        log.exception("N_m3u8DL-RE download failed for url=%s", url)
+        return False
+
+
+async def _download_hls_ffmpeg(url: str, filename: str) -> bool:
+    """Download HLS stream via ffmpeg with proper timeout (fallback)."""
     try:
         process = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y",
@@ -102,16 +202,27 @@ async def _download_hls(url: str, filename: str) -> bool:
             "-i", url,
             "-c", "copy",
             "-bsf:a", "aac_adtstoasc",
+            "-movflags", "+faststart",
             filename,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await process.communicate()
+
+        try:
+            _, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=FFMPEG_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            log.error("ffmpeg timed out for %s, killing process", url)
+            process.kill()
+            await process.wait()
+            return False
 
         if process.returncode != 0:
             log.error("ffmpeg failed: %s", stderr.decode(errors="replace")[-500:])
             return False
         return True
+
     except Exception:
         log.exception("ffmpeg download failed for url=%s", url)
         return False
@@ -119,11 +230,18 @@ async def _download_hls(url: str, filename: str) -> bool:
 
 def _extract_series_name(slug: str) -> str:
     """Extract series name from slug (remove trailing episode number)."""
-    # e.g., "overflow-1" -> "overflow", "ane-yome-quartet-2" -> "ane-yome-quartet"
     parts = slug.rsplit("-", 1)
     if len(parts) == 2 and parts[1].isdigit():
         return parts[0]
     return slug
+
+
+async def _safe_edit(callback_query: CallbackQuery, text: str):
+    """Edit message, ignoring 'message not modified' errors."""
+    try:
+        await callback_query.edit_message_text(text)
+    except Exception:
+        pass
 
 
 # ── Download handler ────────────────────────────────────────────────────
@@ -137,10 +255,9 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
     username = callback_query.from_user.username
     db = get_db()
 
-    # Notify user
-    await callback_query.edit_message_text(
-        "⏳ Fetching hentai for you...\nStatus: **DOWNLOADING**"
-    )
+    start_time = time.time()
+
+    await _safe_edit(callback_query, "⏳ **Fetching hentai for you...**\nStatus: STARTING")
 
     # Log download start
     log_msg_id = await log_download_start(client, username, slug)
@@ -148,7 +265,7 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
     # Check cache first
     cached = await db.Name.find_one({"name": slug})
     if cached:
-        await callback_query.edit_message_text("📤 **Uploading from cache...**")
+        await _safe_edit(callback_query, "📤 **Uploading from cache...** ⚡")
         if log_msg_id:
             await log_download_progress(client, log_msg_id, username, slug, 100)
         try:
@@ -160,7 +277,7 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
             await log_upload_complete(client, log_msg_id, slug, cached["file_id"])
         except Exception:
             log.exception("Failed to send cached file for %s", slug)
-            await callback_query.edit_message_text("❌ Failed to send file. Cache may be stale.")
+            await _safe_edit(callback_query, "❌ Failed to send file. Cache may be stale.")
             await log_error(client, username, f"Cache send failed for {slug}")
         return
 
@@ -168,64 +285,93 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
     try:
         data = await get_streams(slug)
     except Exception:
-        log.exception("Failed to fetch streams for download slug=%s", slug)
-        await callback_query.edit_message_text("❌ API unavailable. Please try again later.")
+        log.exception("Failed to fetch streams for slug=%s", slug)
+        await _safe_edit(callback_query, "❌ API unavailable. Please try again later.")
         await log_error(client, username, f"Stream fetch failed for {slug}")
         return
 
     streams = data["streams"]
     dl_url = data["dl_url"]
-
     filename = f"{slug}.mp4"
     downloaded = False
 
-    # Strategy 1: Direct download URL
-    if dl_url:
-        log.info("Downloading %s via direct URL", slug)
+    # Progress callback for direct downloads
+    async def on_progress(pct):
+        elapsed = int(time.time() - start_time)
+        await _safe_edit(
+            callback_query,
+            f"⬇️ **Downloading...** {pct}%\n⏱ Elapsed: {elapsed}s"
+        )
         if log_msg_id:
-            await log_download_progress(client, log_msg_id, username, slug, 10)
-        downloaded = await _download_direct(dl_url, filename)
+            await log_download_progress(client, log_msg_id, username, slug, pct)
 
-    # Strategy 2: MP4 streams
+    # ── Strategy 1: Direct download URL (fastest) ───────────────────
+    if dl_url:
+        log.info("Strategy 1: Direct URL for %s", slug)
+        await _safe_edit(callback_query, "⬇️ **Downloading via direct link...** 🚀")
+        if log_msg_id:
+            await log_download_progress(client, log_msg_id, username, slug, 5)
+        downloaded = await _download_direct(dl_url, filename, progress_cb=on_progress)
+
+    # ── Strategy 2: N_m3u8DL-RE for HLS (fast, multi-threaded) ─────
+    if not downloaded:
+        hls_streams = [s for s in streams if s["kind"] == "hls" and s["url"]]
+        if hls_streams and os.path.exists(N_M3U8DL_RE):
+            log.info("Strategy 2: N_m3u8DL-RE for %s", slug)
+            await _safe_edit(callback_query, "⬇️ **Downloading via N_m3u8DL-RE...** 🚀\n(Multi-threaded HLS)")
+            if log_msg_id:
+                await log_download_progress(client, log_msg_id, username, slug, 20)
+            downloaded = await _download_n_m3u8dl(hls_streams[0]["url"], filename)
+
+    # ── Strategy 3: MP4 direct streams ──────────────────────────────
     if not downloaded:
         mp4_streams = [s for s in streams if s["kind"] == "mp4" and s["url"]]
         for stream in mp4_streams:
-            log.info("Trying MP4 stream %dp for %s", stream["height"], slug)
-            if log_msg_id:
-                await log_download_progress(client, log_msg_id, username, slug, 30)
-            downloaded = await _download_direct(stream["url"], filename)
+            log.info("Strategy 3: MP4 stream %dp for %s", stream["height"], slug)
+            await _safe_edit(callback_query, f"⬇️ **Downloading {stream['height']}p MP4...**")
+            downloaded = await _download_direct(stream["url"], filename, progress_cb=on_progress)
             if downloaded:
                 break
 
-    # Strategy 3: HLS via ffmpeg
+    # ── Strategy 4: ffmpeg HLS fallback (slowest) ───────────────────
     if not downloaded:
         hls_streams = [s for s in streams if s["kind"] == "hls" and s["url"]]
         for stream in hls_streams:
-            log.info("Trying HLS stream %dp for %s", stream["height"], slug)
+            log.info("Strategy 4: ffmpeg HLS %dp for %s", stream["height"], slug)
+            await _safe_edit(callback_query, f"⬇️ **Downloading {stream['height']}p via ffmpeg...**\n(This may take a moment)")
             if log_msg_id:
-                await log_download_progress(client, log_msg_id, username, slug, 50)
-            downloaded = await _download_hls(stream["url"], filename)
+                await log_download_progress(client, log_msg_id, username, slug, 40)
+            downloaded = await _download_hls_ffmpeg(stream["url"], filename)
             if downloaded:
                 break
 
+    # ── Failed ──────────────────────────────────────────────────────
     if not downloaded:
-        await callback_query.edit_message_text("❌ No downloadable streams found.")
-        await log_error(client, username, f"No downloadable streams for {slug}")
+        elapsed = int(time.time() - start_time)
+        await _safe_edit(callback_query, f"❌ Download failed after {elapsed}s. No working streams found.")
+        await log_error(client, username, f"All download strategies failed for {slug}")
         if os.path.exists(filename):
             os.remove(filename)
         return
 
     if not os.path.exists(filename) or os.path.getsize(filename) == 0:
-        await callback_query.edit_message_text("❌ Download produced an empty file.")
+        await _safe_edit(callback_query, "❌ Download produced an empty file.")
         await log_error(client, username, f"Empty file for {slug}")
         if os.path.exists(filename):
             os.remove(filename)
         return
 
+    # ── Upload ──────────────────────────────────────────────────────
     try:
+        file_size_mb = os.path.getsize(filename) / (1024 * 1024)
+        elapsed = int(time.time() - start_time)
+        await _safe_edit(
+            callback_query,
+            f"📤 **Uploading...** ({file_size_mb:.1f} MB)\n"
+            f"⬇️ Downloaded in {elapsed}s"
+        )
         if log_msg_id:
-            await log_download_progress(client, log_msg_id, username, slug, 80)
-        await callback_query.edit_message_text("📤 **Uploading...**")
+            await log_download_progress(client, log_msg_id, username, slug, 90)
 
         # Get video details for caption
         try:
@@ -239,7 +385,7 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
             )
         except Exception:
             series_name = _extract_series_name(slug)
-            caption = f"Downloaded via @hanime_dl_bot"
+            caption = "Downloaded via @hanime_dl_bot"
 
         # Send to user
         sent = await client.send_document(
@@ -249,6 +395,12 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
         )
 
         file_id = sent.document.file_id
+        total_time = int(time.time() - start_time)
+
+        await _safe_edit(
+            callback_query,
+            f"✅ **Done!** ({file_size_mb:.1f} MB in {total_time}s)"
+        )
 
         # Send to main channel (archive)
         main_channel = await get_main_channel()
@@ -271,7 +423,7 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
             upsert=True,
         )
 
-        # Save to archive (for /archive and /series commands)
+        # Save to archive
         await db.archive.update_one(
             {"slug": slug},
             {"$set": {
@@ -289,7 +441,7 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
 
     except Exception:
         log.exception("Upload failed for %s", slug)
-        await callback_query.edit_message_text("❌ Something went wrong during upload.")
+        await _safe_edit(callback_query, "❌ Something went wrong during upload.")
         await log_error(client, username, f"Upload failed for {slug}")
     finally:
         if os.path.exists(filename):
