@@ -1,8 +1,0 @@
-[phases.setup]
-nixPkgs = ["python311", "ffmpeg-full"]
-
-[phases.install]
-cmds = ["pip install --no-cache-dir -r requirements.txt", "chmod +x binary/N_m3u8DL-RE"]
-
-[start]
-cmd = "python app.py"
