@@ -21,10 +21,18 @@ async def infohentai(client: Client, callback_query: CallbackQuery):
     slug = callback_query.data.split("_", 1)[1]
 
     try:
+        await callback_query.answer("Loading details...")
+    except Exception:
+        pass
+
+    try:
         info = await details(slug)
     except Exception:
         log.exception("Details fetch failed for slug=%s", slug)
-        await callback_query.answer("❌ API unavailable, try again later.", show_alert=True)
+        try:
+            await callback_query.answer("❌ API unavailable, try again later.", show_alert=True)
+        except Exception:
+            pass
         return
 
     name = info["name"]
@@ -37,7 +45,6 @@ async def infohentai(client: Client, callback_query: CallbackQuery):
     brand = info["brand"]
     tags = info["tags"]
 
-    # Format tags (show up to 10)
     tags_str = ", ".join(tags[:10]) if tags else "N/A"
     if len(tags) > 10:
         tags_str += f" (+{len(tags) - 10} more)"
@@ -57,22 +64,38 @@ async def infohentai(client: Client, callback_query: CallbackQuery):
         f"🔖 **Tags:** {tags_str}"
     )
 
-    try:
-        # Try sending with poster image
-        if poster:
-            await callback_query.message.delete()
+    # Strategy 1: Try editing the existing message with text (safest, no deletion)
+    # Strategy 2: If photo needed, send photo WITHOUT deleting first
+    # Strategy 3: Pure text fallback
+
+    sent_photo = False
+    if poster:
+        try:
             await client.send_photo(
                 chat_id=callback_query.from_user.id,
                 photo=poster,
                 caption=text,
                 reply_markup=keyboard,
             )
-        else:
-            await callback_query.edit_message_text(text, reply_markup=keyboard)
-    except Exception:
-        # Fallback to text-only if image fails
+            sent_photo = True
+            # Only delete the old message AFTER photo succeeds
+            try:
+                await callback_query.message.delete()
+            except Exception:
+                pass
+        except Exception:
+            log.warning("Failed to send poster for %s, falling back to text", slug)
+
+    if not sent_photo:
         try:
             await callback_query.edit_message_text(text, reply_markup=keyboard)
         except Exception:
-            log.exception("Failed to edit message for info_%s", slug)
-            await callback_query.answer("Something went wrong.", show_alert=True)
+            # Last resort: send as new message
+            try:
+                await client.send_message(
+                    chat_id=callback_query.from_user.id,
+                    text=text,
+                    reply_markup=keyboard,
+                )
+            except Exception:
+                log.exception("All methods failed for info_%s", slug)
