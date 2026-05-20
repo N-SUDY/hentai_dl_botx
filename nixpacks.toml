@@ -1,8 +1,9 @@
 [phases.setup]
+nixPkgs = ["python311", "python311Packages.pip", "ffmpeg"]
 aptPkgs = ["ffmpeg"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt", "chmod +x binary/N_m3u8DL-RE"]
+cmds = ["python3 -m pip install -r requirements.txt", "chmod +x binary/N_m3u8DL-RE"]
 
 [start]
-cmd = "python app.py"
+cmd = "python3 app.py"
