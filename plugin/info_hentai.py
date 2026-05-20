@@ -1,5 +1,6 @@
 import logging
 import os
+import traceback
 
 from pyrogram import Client
 from pyrogram.types import (
@@ -18,10 +19,13 @@ log = logging.getLogger(__name__)
 
 async def _send_with_poster(client, chat_id, poster_url, text, keyboard):
     """Download poster and send as photo. Returns True on success."""
-    poster_path = await download_poster(poster_url)
-    if not poster_path:
-        return False
+    poster_path = None
     try:
+        poster_path = await download_poster(poster_url)
+        if not poster_path:
+            log.warning("Poster download returned None for %s", poster_url)
+            return False
+        log.info("Poster downloaded to %s, size=%d", poster_path, os.path.getsize(poster_path))
         await client.send_photo(
             chat_id=chat_id,
             photo=poster_path,
@@ -30,13 +34,14 @@ async def _send_with_poster(client, chat_id, poster_url, text, keyboard):
         )
         return True
     except Exception:
-        log.warning("Failed to send downloaded poster")
+        log.exception("Failed to send poster")
         return False
     finally:
-        try:
-            os.unlink(poster_path)
-        except Exception:
-            pass
+        if poster_path:
+            try:
+                os.unlink(poster_path)
+            except Exception:
+                pass
 
 
 @approved_only
@@ -44,6 +49,7 @@ async def _send_with_poster(client, chat_id, poster_url, text, keyboard):
 async def infohentai(client: Client, callback_query: CallbackQuery):
     """Show details for a selected hentai (info_<slug> callback)."""
     slug = callback_query.data.split("_", 1)[1]
+    log.info("=== INFO HANDLER CALLED for slug=%s ===", slug)
 
     try:
         await callback_query.answer("Loading details...")
@@ -51,9 +57,12 @@ async def infohentai(client: Client, callback_query: CallbackQuery):
         pass
 
     try:
+        log.info("Fetching details for %s...", slug)
         info = await details(slug)
+        log.info("Got details: name=%s, episodes=%d, poster=%s",
+                 info.get("name"), len(info.get("episodes", [])), bool(info.get("poster_url")))
     except Exception:
-        log.exception("Details fetch failed for slug=%s", slug)
+        log.exception("Details fetch FAILED for slug=%s", slug)
         try:
             await callback_query.answer("❌ API unavailable, try again later.", show_alert=True)
         except Exception:
@@ -106,30 +115,38 @@ async def infohentai(client: Client, callback_query: CallbackQuery):
 
     keyboard = InlineKeyboardMarkup(buttons)
 
-    # Try sending with poster (downloaded first since CDN blocks hotlinking)
+    log.info("Attempting to send info for %s (poster=%s, episodes=%d)", slug, bool(poster), len(episodes))
+
+    # Try with poster
     sent_photo = False
     if poster:
         sent_photo = await _send_with_poster(
             client, callback_query.from_user.id, poster, text, keyboard
         )
         if sent_photo:
+            log.info("Poster sent successfully for %s", slug)
             try:
                 await callback_query.message.delete()
             except Exception:
                 pass
 
+    # Fallback to text
     if not sent_photo:
+        log.info("Falling back to text for %s", slug)
         try:
             await callback_query.edit_message_text(text, reply_markup=keyboard)
-        except Exception:
+            log.info("Text edit successful for %s", slug)
+        except Exception as e:
+            log.warning("edit_message_text failed for %s: %s", slug, e)
             try:
                 await client.send_message(
                     chat_id=callback_query.from_user.id,
                     text=text,
                     reply_markup=keyboard,
                 )
+                log.info("Sent as new message for %s", slug)
             except Exception:
-                log.exception("All methods failed for info_%s", slug)
+                log.exception("ALL methods failed for info_%s", slug)
 
 
 @approved_only
@@ -137,6 +154,7 @@ async def infohentai(client: Client, callback_query: CallbackQuery):
 async def episode_info(client: Client, callback_query: CallbackQuery):
     """Show download/stream options for a specific episode (eps_<slug>)."""
     slug = callback_query.data.split("_", 1)[1]
+    log.info("=== EPISODE INFO CALLED for slug=%s ===", slug)
 
     try:
         await callback_query.answer("Loading episode...")
