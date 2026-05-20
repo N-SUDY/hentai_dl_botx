@@ -1,4 +1,5 @@
 import logging
+import os
 
 from pyrogram import Client
 from pyrogram.types import (
@@ -10,8 +11,32 @@ from pyrogram.types import (
 from api.hanime import details
 from utils.auth import approved_only
 from utils.fsub import force_sub
+from utils.poster import download_poster
 
 log = logging.getLogger(__name__)
+
+
+async def _send_with_poster(client, chat_id, poster_url, text, keyboard):
+    """Download poster and send as photo. Returns True on success."""
+    poster_path = await download_poster(poster_url)
+    if not poster_path:
+        return False
+    try:
+        await client.send_photo(
+            chat_id=chat_id,
+            photo=poster_path,
+            caption=text,
+            reply_markup=keyboard,
+        )
+        return True
+    except Exception:
+        log.warning("Failed to send downloaded poster")
+        return False
+    finally:
+        try:
+            os.unlink(poster_path)
+        except Exception:
+            pass
 
 
 @approved_only
@@ -60,10 +85,8 @@ async def infohentai(client: Client, callback_query: CallbackQuery):
         f"🔖 **Tags:** {tags_str}"
     )
 
-    # Build keyboard
     buttons = []
 
-    # Episode buttons (if multiple episodes in franchise)
     if len(episodes) > 1:
         text += f"\n\n📂 **Episodes ({len(episodes)}):**"
         for ep in episodes:
@@ -71,7 +94,6 @@ async def infohentai(client: Client, callback_query: CallbackQuery):
             ep_name = ep.get("name", "Unknown")
             if not ep_slug:
                 continue
-            # Highlight current episode
             prefix = "▶️ " if ep_slug == slug else "📺 "
             display = ep_name if len(ep_name) <= 55 else ep_name[:52] + "..."
             buttons.append([InlineKeyboardButton(
@@ -79,29 +101,22 @@ async def infohentai(client: Client, callback_query: CallbackQuery):
                 callback_data=f"eps_{ep_slug}"
             )])
     else:
-        # Single episode — show download/stream for this one
         buttons.append([InlineKeyboardButton("⬇️ Download Now", callback_data=f"dlt_{slug}")])
         buttons.append([InlineKeyboardButton("🔗 Stream Links", callback_data=f"link_{slug}")])
 
     keyboard = InlineKeyboardMarkup(buttons)
 
-    # Send with poster photo
+    # Try sending with poster (downloaded first since CDN blocks hotlinking)
     sent_photo = False
     if poster:
-        try:
-            await client.send_photo(
-                chat_id=callback_query.from_user.id,
-                photo=poster,
-                caption=text,
-                reply_markup=keyboard,
-            )
-            sent_photo = True
+        sent_photo = await _send_with_poster(
+            client, callback_query.from_user.id, poster, text, keyboard
+        )
+        if sent_photo:
             try:
                 await callback_query.message.delete()
             except Exception:
                 pass
-        except Exception:
-            log.warning("Failed to send poster for %s, falling back to text", slug)
 
     if not sent_photo:
         try:
@@ -143,10 +158,7 @@ async def episode_info(client: Client, callback_query: CallbackQuery):
     duration = info["duration"]
     episodes = info.get("episodes", [])
 
-    # Extract series slug for back button
-    series_slug = slug
-    if episodes:
-        series_slug = episodes[0].get("slug", slug)
+    series_slug = episodes[0].get("slug", slug) if episodes else slug
 
     text = (
         f"📺 **{name}**\n"
@@ -162,20 +174,14 @@ async def episode_info(client: Client, callback_query: CallbackQuery):
 
     sent_photo = False
     if poster:
-        try:
-            await client.send_photo(
-                chat_id=callback_query.from_user.id,
-                photo=poster,
-                caption=text,
-                reply_markup=keyboard,
-            )
-            sent_photo = True
+        sent_photo = await _send_with_poster(
+            client, callback_query.from_user.id, poster, text, keyboard
+        )
+        if sent_photo:
             try:
                 await callback_query.message.delete()
             except Exception:
                 pass
-        except Exception:
-            log.warning("Poster failed for episode %s", slug)
 
     if not sent_photo:
         try:
