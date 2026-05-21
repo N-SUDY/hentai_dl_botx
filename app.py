@@ -22,6 +22,7 @@ from plugin.channels import (
     setlog_command, removelog_command, setchannel_command, removechannel_command,
 )
 from plugin.archive import archive_command, series_command
+from plugin.catalog import catalog_episodes_callback
 from plugin.broadcast import broadcast_command
 
 # ── Logging ─────────────────────────────────────────────────────────────
@@ -107,6 +108,7 @@ async def main():
     bot.add_handler(CallbackQueryHandler(hentaidl, filters.regex(r"^dlt_")))
     bot.add_handler(CallbackQueryHandler(quality_download, filters.regex(r"^qdl_")))
     bot.add_handler(CallbackQueryHandler(batch_download, filters.regex(r"^ball_")))
+    bot.add_handler(CallbackQueryHandler(catalog_episodes_callback, filters.regex(r"^cat_")))
     bot.add_handler(CallbackQueryHandler(approve_callback, filters.regex(r"^apr_")))
     bot.add_handler(CallbackQueryHandler(reject_callback, filters.regex(r"^rej_")))
     bot.add_handler(CallbackQueryHandler(checksub_callback, filters.regex(r"^checksub$")))

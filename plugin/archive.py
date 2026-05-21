@@ -1,9 +1,9 @@
 """
-Archive and series browsing commands.
+Archive and series browsing commands — powered by the catalog collection.
 
 Commands:
     /archive <series_name>  — list all episodes of a series (approved users)
-    /series                 — list all archived series (approved users)
+    /series                 — list all cataloged series (approved users)
 """
 
 import logging
@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 @approved_only
 @force_sub
 async def archive_command(client: Client, message: Message):
-    """List all episodes of a series from the archive."""
+    """List all episodes of a series from the catalog."""
     parts = message.text.split(None, 1)
     if len(parts) < 2 or not parts[1].strip():
         await message.reply_text("**Usage:** `/archive <series name>`")
@@ -30,33 +30,45 @@ async def archive_command(client: Client, message: Message):
     series_name = parts[1].strip()
     db = get_db()
 
-    # Search with case-insensitive regex
-    episodes = await db.archive.find(
-        {"series": {"$regex": series_name, "$options": "i"}}
-    ).sort("uploaded_at", 1).to_list(length=200)
+    # Search catalog with case-insensitive regex on series or series_name
+    docs = await db.catalog.find({
+        "$or": [
+            {"series": {"$regex": series_name, "$options": "i"}},
+            {"series_name": {"$regex": series_name, "$options": "i"}},
+        ]
+    }).to_list(length=50)
 
-    if not episodes:
-        await message.reply_text(f"No episodes found for series matching **{series_name}**.")
+    if not docs:
+        await message.reply_text(f"No series found matching **{series_name}**.")
         return
 
-    lines = [f"📂 **Archive: {series_name}**\n"]
-    for ep in episodes:
-        slug = ep.get("slug", "unknown")
-        channel_id = ep.get("channel_id")
-        message_id = ep.get("message_id")
+    lines = []
+    for doc in docs:
+        display_name = doc.get("series_name", doc.get("series", "Unknown"))
+        episodes = doc.get("episodes", {})
+        channel_id = doc.get("channel_id")
+        channel_message_id = doc.get("channel_message_id")
 
-        if channel_id and message_id:
-            # Convert channel_id to a link-friendly format
-            # Telegram channel links: https://t.me/c/<channel_id_without_-100>/<message_id>
+        lines.append(f"📺 **{display_name}** — {len(episodes)} episode(s)")
+
+        if channel_id and channel_message_id:
             chan_id_str = str(channel_id)
             if chan_id_str.startswith("-100"):
                 chan_id_str = chan_id_str[4:]
-            link = f"https://t.me/c/{chan_id_str}/{message_id}"
-            lines.append(f"• [{slug}]({link})")
-        else:
-            lines.append(f"• {slug}")
+            link = f"https://t.me/c/{chan_id_str}/{channel_message_id}"
+            lines.append(f"  📌 [View in channel]({link})")
 
-    text = "\n".join(lines)
+        # List individual episodes
+        for ep_slug in sorted(episodes.keys()):
+            ep = episodes[ep_slug]
+            ep_name = ep.get("name", ep_slug)
+            file_size = ep.get("file_size", 0)
+            size_str = f" ({file_size / 1024 / 1024:.1f} MB)" if file_size else ""
+            lines.append(f"  • {ep_name}{size_str}")
+
+        lines.append("")  # blank separator
+
+    text = "\n".join(lines).strip()
     if len(text) > 4000:
         text = text[:4000] + "\n\n... (truncated)"
 
@@ -66,21 +78,23 @@ async def archive_command(client: Client, message: Message):
 @approved_only
 @force_sub
 async def series_command(client: Client, message: Message):
-    """List all unique archived series."""
+    """List all cataloged series."""
     db = get_db()
 
-    # Get distinct series names
-    series_list = await db.archive.distinct("series")
+    # Get all catalog entries
+    docs = await db.catalog.find({}).sort("series_name", 1).to_list(length=500)
 
-    if not series_list:
-        await message.reply_text("No series in the archive yet.")
+    if not docs:
+        await message.reply_text("No series in the catalog yet.")
         return
 
-    # Count episodes per series
-    lines = [f"📚 **Archived Series** ({len(series_list)}):\n"]
-    for name in sorted(series_list):
-        count = await db.archive.count_documents({"series": name})
-        lines.append(f"• **{name}** — {count} episode(s)")
+    lines = [f"📚 **Series Catalog** ({len(docs)}):\n"]
+    for doc in docs:
+        display_name = doc.get("series_name", doc.get("series", "Unknown"))
+        episodes = doc.get("episodes", {})
+        tags = doc.get("tags", [])
+        tags_str = f" — {', '.join(tags[:3])}" if tags else ""
+        lines.append(f"• **{display_name}** — {len(episodes)} ep(s){tags_str}")
 
     text = "\n".join(lines)
     if len(text) > 4000:

@@ -19,6 +19,7 @@ from api.hanime import get_streams, details
 from utils.auth import approved_only
 from utils.fsub import force_sub
 from utils.db import get_db
+from utils.catalog import update_catalog
 from utils.logger import (
     log_download_start, log_download_progress, log_upload_complete,
     log_error, get_main_channel,
@@ -524,7 +525,8 @@ async def quality_download(client: Client, callback_query: CallbackQuery):
         if log_msg_id:
             await log_download_progress(client, log_msg_id, username, slug, 90)
 
-        # Get video details for caption
+        # Get video details for caption and catalog
+        info = None
         try:
             info = await details(slug)
             series_name = _extract_series_name(slug)
@@ -553,20 +555,6 @@ async def quality_download(client: Client, callback_query: CallbackQuery):
             f"✅ **Done!** ({file_size_mb:.1f} MB in {total_time}s)"
         )
 
-        # Send to main channel (archive)
-        main_channel = await get_main_channel()
-        channel_msg_id = None
-        if main_channel:
-            try:
-                channel_msg = await client.send_document(
-                    chat_id=main_channel,
-                    document=file_id,
-                    caption=caption,
-                )
-                channel_msg_id = channel_msg.id
-            except Exception:
-                log.warning("Failed to send to main channel for %s", slug)
-
         # Save to MongoDB cache (with file_size for validation)
         await db.Name.update_one(
             {"name": slug},
@@ -574,19 +562,19 @@ async def quality_download(client: Client, callback_query: CallbackQuery):
             upsert=True,
         )
 
-        # Save to archive
-        await db.archive.update_one(
-            {"slug": slug},
-            {"$set": {
-                "slug": slug,
-                "series": series_name,
-                "file_id": file_id,
-                "message_id": channel_msg_id,
-                "channel_id": main_channel,
-                "uploaded_at": datetime.now(timezone.utc),
-            }},
-            upsert=True,
-        )
+        # Update series catalog (creates/updates channel message)
+        try:
+            await update_catalog(
+                client=client,
+                slug=slug,
+                file_id=file_id,
+                file_size=sent.document.file_size,
+                series_name=info.get("name", "") if info else "",
+                poster_url=info.get("poster_url", "") if info else "",
+                tags=info.get("tags", []) if info else [],
+            )
+        except Exception:
+            log.exception("Failed to update catalog for %s", slug)
 
         await log_upload_complete(client, log_msg_id, slug, file_id)
 
