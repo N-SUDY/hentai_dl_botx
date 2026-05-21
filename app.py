@@ -98,7 +98,7 @@ async def main():
     bot.add_handler(MessageHandler(broadcast_command, filters.command("broadcast")))
 
     # Search — LAST message handler (catches any non-command text)
-    bot.add_handler(MessageHandler(hentaisearch, filters.text & ~filters.command & filters.private))
+    bot.add_handler(MessageHandler(hentaisearch, filters.text & ~filters.regex(r"^/") & filters.private))
 
     # ── Callback query handlers ─────────────────────────────────────────
     bot.add_handler(CallbackQueryHandler(infohentai, filters.regex(r"^info_")))
