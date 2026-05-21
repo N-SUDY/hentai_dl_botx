@@ -8,7 +8,6 @@ Sends a welcome photo with bot info.
 import logging
 from datetime import datetime, timezone
 
-import aiohttp
 from pyrogram import Client
 from pyrogram.types import (
     Message,
@@ -17,42 +16,20 @@ from pyrogram.types import (
 )
 
 from utils.db import get_db
+from utils.fsub import check_force_sub, send_force_sub_message
+from utils.poster import download_poster
+import os
 
 log = logging.getLogger(__name__)
-
-# Fallback waifu images if API fails
-FALLBACK_IMAGES = [
-    "https://nekos.best/api/v2/waifu/de0d245b-03d6-4485-bfe7-8e274d29938f.png",
-]
-
-
-async def _get_waifu_image() -> str:
-    """Fetch a random waifu image URL from nekos.best API."""
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-            async with session.get("https://nekos.best/api/v2/waifu") as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data["results"][0]["url"]
-    except Exception:
-        log.warning("Failed to fetch waifu image, using fallback")
-    return FALLBACK_IMAGES[0]
 
 WELCOME_TEXT = (
     "✨ **Welcome to Hentai DL Bot** ✨\n"
     "━━━━━━━━━━━━━━━━━━━━━━\n\n"
     "🎌 Your ultimate hentai companion — search, stream,\n"
     "and download your favorite titles directly to Telegram.\n\n"
-    "**📖 How to use:**\n"
-    "• `/search <name>` — Search for hentai\n"
-    "• Tap a result → View details → Download or Stream\n"
-    "• `/archive <series>` — Browse archived episodes\n"
-    "• `/series` — List all archived series\n\n"
-    "**🔐 Access:**\n"
-    "• `/request` — Request access if you're new\n\n"
+    "💬 **Just type any hentai name to search!**\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━\n"
     "⚡ Powered by Hanime.tv API & FFmpeg\n"
-    "👨‍💻 **Created by Mr. Aman**\n"
 )
 
 OWNER_SETUP_TEXT = (
@@ -73,41 +50,63 @@ OWNER_SETUP_TEXT = (
     "• `/setchannel <channel_id>` — Set archive channel\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━\n"
     "⚡ Powered by Hanime.tv API & FFmpeg\n"
-    "👨‍💻 **Created by Mr. Aman**\n"
 )
+
+# Poster URL for welcome image
+WELCOME_POSTER = "https://hanime-cdn.com/images/covers/overflow-1.jpg"
 
 
 async def _send_welcome_photo(client: Client, chat_id: int, text: str, keyboard):
-    """Try to send welcome as photo with random waifu, fallback to text."""
-    waifu_url = await _get_waifu_image()
-    try:
-        await client.send_photo(
-            chat_id=chat_id,
-            photo=waifu_url,
-            caption=text,
-            reply_markup=keyboard,
-        )
-    except Exception:
-        # Fallback: send as animation (GIF)
+    """Download a poster and send as welcome photo."""
+    poster_path = await download_poster(WELCOME_POSTER)
+    if poster_path:
         try:
-            await client.send_animation(
+            await client.send_photo(
                 chat_id=chat_id,
-                animation="https://telegra.ph/file/cdeae50a8a23041b01935.mp4",
+                photo=poster_path,
                 caption=text,
                 reply_markup=keyboard,
             )
+            return
         except Exception:
-            # Final fallback: text only
-            await client.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_markup=keyboard,
-            )
+            log.warning("Failed to send welcome poster")
+        finally:
+            try:
+                os.unlink(poster_path)
+            except Exception:
+                pass
+
+    # Fallback: text only
+    await client.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=keyboard,
+    )
+
+
+async def checksub_callback(client, callback_query):
+    """Handle 'I've Joined' button — re-check membership."""
+    user_id = callback_query.from_user.id
+    passed, channel_id = await check_force_sub(client, user_id)
+    if passed:
+        await callback_query.answer("✅ Verified! You can now use the bot.", show_alert=True)
+        try:
+            await callback_query.message.delete()
+        except Exception:
+            pass
+    else:
+        await callback_query.answer("❌ You haven't joined yet! Please join the channel first.", show_alert=True)
 
 
 async def start_command(client: Client, message: Message):
     user = message.from_user
     db = get_db()
+
+    # Force-sub check FIRST (before anything else)
+    passed, channel_id = await check_force_sub(client, user.id)
+    if not passed and channel_id:
+        await send_force_sub_message(client, message.chat.id, channel_id)
+        return
 
     # Check if any admins exist
     admin_count = await db.admins.count_documents({})
@@ -132,23 +131,8 @@ async def start_command(client: Client, message: Message):
         )
 
         log.info("Owner set up: user_id=%s username=%s", user.id, user.username)
-
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 Updates", url="https://t.me/metavoid")],
-            [InlineKeyboardButton("💬 Support", url="https://t.me/metavoidsupport")],
-        ])
-
-        await _send_welcome_photo(client, message.chat.id, OWNER_SETUP_TEXT, keyboard)
+        await _send_welcome_photo(client, message.chat.id, OWNER_SETUP_TEXT, None)
         return
 
     # Regular /start
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔍 Search Hentai", switch_inline_query_current_chat="/search ")],
-        [
-            InlineKeyboardButton("📢 Updates", url="https://t.me/metavoid"),
-            InlineKeyboardButton("💬 Support", url="https://t.me/metavoidsupport"),
-        ],
-        [InlineKeyboardButton("👨‍💻 Created by Mr. Aman", url="https://t.me/Am_ankhan")],
-    ])
-
-    await _send_welcome_photo(client, message.chat.id, WELCOME_TEXT, keyboard)
+    await _send_welcome_photo(client, message.chat.id, WELCOME_TEXT, None)

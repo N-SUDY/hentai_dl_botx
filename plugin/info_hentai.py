@@ -109,6 +109,11 @@ async def infohentai(client: Client, callback_query: CallbackQuery):
                 f"{prefix}{display}",
                 callback_data=f"eps_{ep_slug}"
             )])
+        # Batch download all episodes
+        buttons.append([InlineKeyboardButton(
+            f"⬇️ Download All {len(episodes)} Episodes",
+            callback_data=f"ball_{slug}"
+        )])
     else:
         buttons.append([InlineKeyboardButton("⬇️ Download Now", callback_data=f"dlt_{slug}")])
         buttons.append([InlineKeyboardButton("🔗 Stream Links", callback_data=f"link_{slug}")])

@@ -494,3 +494,148 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
     finally:
         if os.path.exists(filename):
             os.remove(filename)
+
+
+# ── Batch download all episodes ─────────────────────────────────────────
+
+async def batch_download(client: Client, callback_query: CallbackQuery):
+    """Download all episodes of a series (ball_<slug> callback)."""
+    slug = callback_query.data.split("_", 1)[1]
+    chat_id = callback_query.from_user.id
+    username = callback_query.from_user.username
+
+    log.info("=== BATCH DOWNLOAD === slug=%s user=%s", slug, chat_id)
+
+    from utils.auth import is_approved
+    if not await is_approved(chat_id):
+        await callback_query.answer("⛔ No access.", show_alert=True)
+        return
+
+    try:
+        await callback_query.answer("Starting batch download...")
+    except Exception:
+        pass
+
+    # Get episode list
+    try:
+        info = await details(slug)
+    except Exception:
+        log.exception("Failed to get details for batch %s", slug)
+        await callback_query.answer("❌ API error", show_alert=True)
+        return
+
+    episodes = info.get("episodes", [])
+    if not episodes:
+        episodes = [{"slug": slug, "name": info["name"]}]
+
+    total = len(episodes)
+    succeeded = 0
+    failed = 0
+
+    status_msg = await client.send_message(
+        chat_id=chat_id,
+        text=f"📥 **Batch Download Started**\n\nEpisodes: {total}\nProgress: 0/{total}",
+    )
+
+    db = get_db()
+
+    for i, ep in enumerate(episodes):
+        ep_slug = ep.get("slug", "")
+        ep_name = ep.get("name", ep_slug)
+        if not ep_slug:
+            continue
+
+        try:
+            await status_msg.edit_text(
+                f"📥 **Batch Download**\n\n"
+                f"⬇️ Downloading: **{ep_name}** ({i + 1}/{total})\n"
+                f"✅ Done: {succeeded} | ❌ Failed: {failed}"
+            )
+        except Exception:
+            pass
+
+        # Check cache
+        cached = await db.Name.find_one({"name": ep_slug})
+        if cached and cached.get("file_size", 0) > 50_000:
+            try:
+                await client.send_document(
+                    chat_id=chat_id,
+                    document=cached["file_id"],
+                    caption=f"📺 **{ep_name}**\nDownloaded via @hanime_dl_bot",
+                )
+                succeeded += 1
+                continue
+            except Exception:
+                await db.Name.delete_one({"name": ep_slug})
+
+        # Fresh download
+        try:
+            data = await get_streams(ep_slug)
+        except Exception:
+            log.error("Batch: stream fetch failed for %s", ep_slug)
+            failed += 1
+            continue
+
+        dl_url = data["dl_url"]
+        if dl_url:
+            m = re.match(r"https?://pixeldrain\.com/[du]/([A-Za-z0-9]+)", dl_url)
+            if m:
+                dl_url = f"https://pixeldrain.com/api/file/{m.group(1)}"
+
+        streams = data["streams"]
+        filename = f"{ep_slug}.mp4"
+        downloaded = False
+
+        if dl_url:
+            downloaded = await _download_direct(dl_url, filename)
+        if not downloaded:
+            for s in streams:
+                if s["kind"] == "hls":
+                    downloaded = await _download_n_m3u8dl(s["url"], filename)
+                    if not downloaded:
+                        downloaded = await _download_hls_ffmpeg(s["url"], filename)
+                    if downloaded:
+                        break
+
+        if not downloaded or not os.path.exists(filename) or os.path.getsize(filename) < 50_000:
+            if os.path.exists(filename):
+                os.remove(filename)
+            failed += 1
+            continue
+
+        try:
+            ep_info = await details(ep_slug)
+            tags_str = ", ".join(ep_info.get("tags", [])[:5])
+            caption = f"📺 **{ep_name}**\n🏷 {tags_str}\nDownloaded via @hanime_dl_bot"
+        except Exception:
+            caption = f"📺 **{ep_name}**\nDownloaded via @hanime_dl_bot"
+
+        try:
+            sent = await client.send_document(
+                chat_id=chat_id,
+                document=filename,
+                caption=caption,
+            )
+            file_id = sent.document.file_id
+            await db.Name.update_one(
+                {"name": ep_slug},
+                {"$set": {"name": ep_slug, "file_id": file_id, "file_size": sent.document.file_size}},
+                upsert=True,
+            )
+            succeeded += 1
+        except Exception:
+            log.exception("Batch: upload failed for %s", ep_slug)
+            failed += 1
+        finally:
+            if os.path.exists(filename):
+                os.remove(filename)
+
+    try:
+        await status_msg.edit_text(
+            f"✅ **Batch Download Complete!**\n\n"
+            f"📺 Total: {total}\n"
+            f"✅ Success: {succeeded}\n"
+            f"❌ Failed: {failed}"
+        )
+    except Exception:
+        pass

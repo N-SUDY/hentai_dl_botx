@@ -3,14 +3,15 @@ import sys
 import logging
 
 from pyrogram import Client, filters, idle
+from pyrogram.types import BotCommand
 from pyrogram.handlers import MessageHandler, CallbackQueryHandler
 
 from utils.db import init_db
 
-from plugin.start import start_command
+from plugin.start import start_command, checksub_callback
 from plugin.search_hentai import hentaisearch
 from plugin.info_hentai import infohentai, episode_info
-from plugin.video_hentai import hentailink, hentaidl
+from plugin.video_hentai import hentailink, hentaidl, batch_download
 from plugin.admin import addadmin_command, removeadmin_command, admins_command, clearcache_command
 from plugin.users import (
     request_command, approve_command, reject_command, revoke_command,
@@ -58,17 +59,14 @@ bot = Client(
     plugins=None,
 )
 
-# Store mongo_url for legacy compat (video_hentai uses it)
 bot.mongo_url = MONGO_URL
 
 
 async def main():
-    # Initialize centralized DB
     await init_db(MONGO_URL)
 
-    # ── Command handlers ────────────────────────────────────────────────
+    # ── Command handlers (registered FIRST — commands take priority) ────
     bot.add_handler(MessageHandler(start_command, filters.command("start")))
-    bot.add_handler(MessageHandler(hentaisearch, filters.command("search")))
 
     # Admin commands
     bot.add_handler(MessageHandler(addadmin_command, filters.command("addadmin")))
@@ -96,24 +94,44 @@ async def main():
     bot.add_handler(MessageHandler(archive_command, filters.command("archive")))
     bot.add_handler(MessageHandler(series_command, filters.command("series")))
 
-    # Broadcast command
+    # Broadcast
     bot.add_handler(MessageHandler(broadcast_command, filters.command("broadcast")))
+
+    # Search — LAST message handler (catches any non-command text)
+    bot.add_handler(MessageHandler(hentaisearch, filters.text & ~filters.command & filters.private))
 
     # ── Callback query handlers ─────────────────────────────────────────
     bot.add_handler(CallbackQueryHandler(infohentai, filters.regex(r"^info_")))
     bot.add_handler(CallbackQueryHandler(episode_info, filters.regex(r"^eps_")))
     bot.add_handler(CallbackQueryHandler(hentailink, filters.regex(r"^link_")))
     bot.add_handler(CallbackQueryHandler(hentaidl, filters.regex(r"^dlt_")))
+    bot.add_handler(CallbackQueryHandler(batch_download, filters.regex(r"^ball_")))
     bot.add_handler(CallbackQueryHandler(approve_callback, filters.regex(r"^apr_")))
     bot.add_handler(CallbackQueryHandler(reject_callback, filters.regex(r"^rej_")))
+    bot.add_handler(CallbackQueryHandler(checksub_callback, filters.regex(r"^checksub$")))
 
-    # Debug: catch-all callback handler (last priority)
-    async def debug_callback(client, callback_query):
-        log.warning("UNHANDLED CALLBACK: data=%s user=%s", callback_query.data, callback_query.from_user.id)
-    bot.add_handler(CallbackQueryHandler(debug_callback))
-
+    # Set bot commands visible in Telegram menu
     await bot.start()
-    log.info("Bot started successfully!")
+
+    await bot.set_bot_commands([
+        BotCommand("start", "Start the bot"),
+        BotCommand("request", "Request access to use the bot"),
+        BotCommand("archive", "Browse archived episodes"),
+        BotCommand("series", "List all archived series"),
+        BotCommand("broadcast", "Broadcast message to all users"),
+        BotCommand("clearcache", "Clear download cache"),
+        BotCommand("admins", "List all admins"),
+        BotCommand("users", "List approved users"),
+        BotCommand("pending", "View pending access requests"),
+        BotCommand("approve", "Approve a user"),
+        BotCommand("reject", "Reject a user"),
+        BotCommand("adduser", "Directly add a user"),
+        BotCommand("removeuser", "Remove a user"),
+        BotCommand("setlog", "Set log channel"),
+        BotCommand("setchannel", "Set main archive channel"),
+    ])
+
+    log.info("Bot started successfully! Commands registered.")
     await idle()
     await bot.stop()
     log.info("Bot stopped.")
