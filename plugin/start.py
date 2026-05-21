@@ -2,11 +2,14 @@
 /start command handler.
 
 On first run (no admins exist), the user who sends /start becomes the owner.
-Sends a welcome photo with bot info.
+Sends a random welcome image from assets/welcome/.
 """
 
 import logging
+import os
+import random
 from datetime import datetime, timezone
+from pathlib import Path
 
 from pyrogram import Client
 from pyrogram.types import (
@@ -17,10 +20,11 @@ from pyrogram.types import (
 
 from utils.db import get_db
 from utils.fsub import check_force_sub, send_force_sub_message
-from utils.poster import download_poster
-import os
 
 log = logging.getLogger(__name__)
+
+# Path to welcome images
+WELCOME_DIR = Path(__file__).parent.parent / "assets" / "welcome"
 
 WELCOME_TEXT = (
     "✨ **Welcome to Hentai DL Bot** ✨\n"
@@ -30,6 +34,7 @@ WELCOME_TEXT = (
     "💬 **Just type any hentai name to search!**\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━\n"
     "⚡ Powered by Hanime.tv API & FFmpeg\n"
+    "👨‍💻 **Created by Mr. Aman**"
 )
 
 OWNER_SETUP_TEXT = (
@@ -50,38 +55,36 @@ OWNER_SETUP_TEXT = (
     "• `/setchannel <channel_id>` — Set archive channel\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━\n"
     "⚡ Powered by Hanime.tv API & FFmpeg\n"
+    "👨‍💻 **Created by Mr. Aman**"
 )
 
-# Poster URL for welcome image
-WELCOME_POSTER = "https://hanime-cdn.com/images/covers/overflow-1.jpg"
+
+def _get_random_welcome_image() -> str | None:
+    """Get a random welcome image path from assets/welcome/."""
+    if not WELCOME_DIR.exists():
+        return None
+    images = list(WELCOME_DIR.glob("*.jpg")) + list(WELCOME_DIR.glob("*.png"))
+    if not images:
+        return None
+    return str(random.choice(images))
 
 
-async def _send_welcome_photo(client: Client, chat_id: int, text: str, keyboard):
-    """Download a poster and send as welcome photo."""
-    poster_path = await download_poster(WELCOME_POSTER)
-    if poster_path:
+async def _send_welcome(client: Client, chat_id: int, text: str):
+    """Send welcome message with a random image."""
+    img = _get_random_welcome_image()
+    if img:
         try:
             await client.send_photo(
                 chat_id=chat_id,
-                photo=poster_path,
+                photo=img,
                 caption=text,
-                reply_markup=keyboard,
             )
             return
         except Exception:
-            log.warning("Failed to send welcome poster")
-        finally:
-            try:
-                os.unlink(poster_path)
-            except Exception:
-                pass
+            log.warning("Failed to send welcome image")
 
     # Fallback: text only
-    await client.send_message(
-        chat_id=chat_id,
-        text=text,
-        reply_markup=keyboard,
-    )
+    await client.send_message(chat_id=chat_id, text=text)
 
 
 async def checksub_callback(client, callback_query):
@@ -102,7 +105,7 @@ async def start_command(client: Client, message: Message):
     user = message.from_user
     db = get_db()
 
-    # Force-sub check FIRST (before anything else)
+    # Force-sub check FIRST
     passed, channel_id = await check_force_sub(client, user.id)
     if not passed and channel_id:
         await send_force_sub_message(client, message.chat.id, channel_id)
@@ -118,7 +121,6 @@ async def start_command(client: Client, message: Message):
             "added_at": datetime.now(timezone.utc),
         })
 
-        # Also auto-approve the owner
         await db.approved_users.update_one(
             {"user_id": user.id},
             {"$set": {
@@ -131,8 +133,8 @@ async def start_command(client: Client, message: Message):
         )
 
         log.info("Owner set up: user_id=%s username=%s", user.id, user.username)
-        await _send_welcome_photo(client, message.chat.id, OWNER_SETUP_TEXT, None)
+        await _send_welcome(client, message.chat.id, OWNER_SETUP_TEXT)
         return
 
     # Regular /start
-    await _send_welcome_photo(client, message.chat.id, WELCOME_TEXT, None)
+    await _send_welcome(client, message.chat.id, WELCOME_TEXT)
