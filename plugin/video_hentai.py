@@ -91,9 +91,10 @@ async def _download_direct(url: str, filename: str, progress_cb=None) -> bool:
     """
     Download a file directly via aiohttp with timeout and progress.
     Uses larger chunks and connection pooling for speed.
+    Validates that the response is actually a video (not HTML).
     """
     try:
-        timeout = aiohttp.ClientTimeout(total=DOWNLOAD_TIMEOUT, connect=10, sock_read=30)
+        timeout = aiohttp.ClientTimeout(total=DOWNLOAD_TIMEOUT, connect=10, sock_read=60)
         connector = aiohttp.TCPConnector(limit=5, force_close=False)
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -102,23 +103,39 @@ async def _download_direct(url: str, filename: str, progress_cb=None) -> bool:
         async with aiohttp.ClientSession(timeout=timeout, connector=connector, headers=headers) as session:
             async with session.get(url) as resp:
                 resp.raise_for_status()
+
+                # Check content type — reject HTML responses
+                ct = resp.content_type or ""
+                if "text/html" in ct or "application/json" in ct:
+                    log.error("URL returned %s instead of video: %s", ct, url)
+                    return False
+
                 total = resp.content_length or 0
+                log.info("Downloading %s — size: %s, type: %s",
+                         url[:80], f"{total / 1024 / 1024:.1f}MB" if total else "unknown", ct)
+
                 downloaded = 0
                 last_progress = 0
 
                 with open(filename, "wb") as f:
-                    # Use 256KB chunks for faster throughput
                     async for chunk in resp.content.iter_chunked(256 * 1024):
                         f.write(chunk)
                         downloaded += len(chunk)
 
-                        # Report progress every 10%
                         if progress_cb and total > 0:
                             pct = int(downloaded * 100 / total)
                             if pct >= last_progress + 10:
                                 last_progress = pct
                                 await progress_cb(pct)
 
+        # Final validation — reject tiny files (likely error pages)
+        file_size = os.path.getsize(filename)
+        if file_size < 50_000:  # Less than 50KB is not a video
+            log.error("Downloaded file too small (%d bytes), likely not a video: %s", file_size, url)
+            os.remove(filename)
+            return False
+
+        log.info("Download complete: %s (%.1f MB)", filename, file_size / 1024 / 1024)
         return True
     except asyncio.TimeoutError:
         log.error("Direct download timed out for url=%s", url)

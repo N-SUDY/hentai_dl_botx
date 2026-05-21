@@ -187,6 +187,10 @@ async def get_streams(slug: str) -> dict:
             url = stream.get("url", "")
             if not url:
                 continue
+            # Skip known dead/placeholder HLS URLs
+            if "streamable.cloud/hls/stream.m3u8" in url:
+                log.info("Skipping placeholder HLS URL: %s", url)
+                continue
             streams.append({
                 "url": url,
                 "height": stream.get("height", 0),
