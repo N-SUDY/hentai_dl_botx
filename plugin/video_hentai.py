@@ -295,33 +295,31 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
     # Log download start
     log_msg_id = await log_download_start(client, username, slug)
 
-    # Check cache first
+    # Check cache first — validate before sending
     cached = await db.Name.find_one({"name": slug})
     if cached:
-        await _safe_edit(callback_query, "📤 **Uploading from cache...** ⚡")
-        if log_msg_id:
-            await log_download_progress(client, log_msg_id, username, slug, 100)
-        try:
-            sent_cached = await client.send_document(
-                chat_id=chat_id,
-                document=cached["file_id"],
-                caption="Downloaded via @hanime_dl_bot",
-            )
-            # Verify the cached file isn't tiny (bad cache from earlier bug)
-            if sent_cached.document and sent_cached.document.file_size and sent_cached.document.file_size < 50_000:
-                log.warning("Cached file for %s is only %d bytes — deleting bad cache entry",
-                            slug, sent_cached.document.file_size)
-                await db.Name.delete_one({"name": slug})
-                await _safe_edit(callback_query, "🔄 **Cache was stale, re-downloading...**")
-                # Don't return — fall through to fresh download
-            else:
-                await log_upload_complete(client, log_msg_id, slug, cached["file_id"])
-                return
-        except Exception:
-            log.exception("Failed to send cached file for %s — removing bad cache", slug)
+        file_id = cached.get("file_id", "")
+        file_size = cached.get("file_size", 0)
+
+        # Reject cached entries with known bad size
+        if file_size and file_size < 50_000:
+            log.warning("Bad cache for %s (%d bytes), deleting", slug, file_size)
             await db.Name.delete_one({"name": slug})
-            await _safe_edit(callback_query, "🔄 **Cache error, re-downloading...**")
             # Fall through to fresh download
+        elif file_id:
+            await _safe_edit(callback_query, "📤 **Uploading from cache...** ⚡")
+            try:
+                await client.send_document(
+                    chat_id=chat_id,
+                    document=file_id,
+                    caption="Downloaded via @hanime_dl_bot",
+                )
+                await log_upload_complete(client, log_msg_id, slug, file_id)
+                return
+            except Exception:
+                log.exception("Failed to send cached file for %s — removing", slug)
+                await db.Name.delete_one({"name": slug})
+                await _safe_edit(callback_query, "🔄 **Cache error, re-downloading...**")
 
     # Fetch streams
     try:
@@ -466,10 +464,10 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
             except Exception:
                 log.warning("Failed to send to main channel for %s", slug)
 
-        # Save to MongoDB cache
+        # Save to MongoDB cache (with file_size for validation)
         await db.Name.update_one(
             {"name": slug},
-            {"$set": {"name": slug, "file_id": file_id}},
+            {"$set": {"name": slug, "file_id": file_id, "file_size": sent.document.file_size}},
             upsert=True,
         )
 
