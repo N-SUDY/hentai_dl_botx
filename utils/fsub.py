@@ -59,31 +59,32 @@ async def _get_channel_link(client: Client, channel_id: int) -> str:
     if channel_id in _channel_link_cache:
         return _channel_link_cache[channel_id]
 
+    link = None
     try:
         chat = await client.get_chat(channel_id)
+        log.info("Channel %s: username=%s invite_link=%s", channel_id, chat.username, chat.invite_link)
+
         if chat.username:
             link = f"https://t.me/{chat.username}"
         elif chat.invite_link:
             link = chat.invite_link
-        else:
-            # Try to export invite link
-            try:
-                link = await client.export_chat_invite_link(channel_id)
-            except Exception:
-                # Fallback
-                chan_str = str(channel_id)
-                if chan_str.startswith("-100"):
-                    chan_str = chan_str[4:]
-                link = f"https://t.me/c/{chan_str}/1"
-
-        _channel_link_cache[channel_id] = link
-        return link
     except Exception:
-        log.warning("Could not get channel link for %s", channel_id)
-        chan_str = str(channel_id)
-        if chan_str.startswith("-100"):
-            chan_str = chan_str[4:]
-        return f"https://t.me/c/{chan_str}/1"
+        log.warning("get_chat failed for %s", channel_id)
+
+    # If no public link, try exporting an invite link
+    if not link:
+        try:
+            link = await client.export_chat_invite_link(channel_id)
+            log.info("Exported invite link for %s: %s", channel_id, link)
+        except Exception:
+            log.warning("export_chat_invite_link failed for %s", channel_id)
+
+    if not link:
+        log.error("Could not get ANY join link for channel %s! Make sure bot is admin.", channel_id)
+        link = f"https://t.me/+placeholder"
+
+    _channel_link_cache[channel_id] = link
+    return link
 
 
 NOT_JOINED_TEXT = (
