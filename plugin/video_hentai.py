@@ -280,8 +280,8 @@ async def _safe_edit(callback_query: CallbackQuery, text: str):
 # ── Download handler ────────────────────────────────────────────────────
 
 async def hentaidl(client: Client, callback_query: CallbackQuery):
-    """Show quality/resolution options before downloading (dlt_<slug>)."""
-    log.info("=== QUALITY SELECT === data=%s user=%s",
+    """Download the video directly via Pixeldrain (dlt_<slug>)."""
+    log.info("=== DOWNLOAD HANDLER === data=%s user=%s",
              callback_query.data, callback_query.from_user.id)
 
     from utils.auth import is_approved
@@ -291,108 +291,13 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
         return
 
     slug = callback_query.data.split("_", 1)[1]
-
-    try:
-        await callback_query.answer("Loading quality options...")
-    except Exception:
-        pass
-
-    try:
-        data = await get_streams(slug)
-    except Exception:
-        log.exception("Failed to fetch streams for quality select %s", slug)
-        await callback_query.answer("❌ API error", show_alert=True)
-        return
-
-    dl_url = data["dl_url"]
-    if dl_url:
-        m = re.match(r"https?://pixeldrain\.com/[du]/([A-Za-z0-9]+)", dl_url)
-        if m:
-            dl_url = f"https://pixeldrain.com/api/file/{m.group(1)}"
-
-    streams = data["streams"]
-
-    buttons = []
-
-    # Add pixeldrain option (usually 720p)
-    if dl_url:
-        buttons.append([InlineKeyboardButton(
-            "📥 720p (Pixeldrain) — Fastest",
-            callback_data=f"qdl_pd_{slug}"
-        )])
-
-    # Add HLS stream options
-    seen = set()
-    for s in streams:
-        h = str(s.get("height", 0))
-        if h in seen or h == "0":
-            continue
-        seen.add(h)
-        size_str = f" — {s['filesize_mbs']:.0f}MB" if s.get("filesize_mbs") else ""
-        buttons.append([InlineKeyboardButton(
-            f"📥 {h}p (HLS){size_str}",
-            callback_data=f"qdl_{h}_{slug}"
-        )])
-
-    if not buttons:
-        await callback_query.answer("❌ No downloadable sources found.", show_alert=True)
-        return
-
-    # If only one option, download directly
-    if len(buttons) == 1:
-        # Simulate the quality download
-        if dl_url:
-            callback_query.data = f"qdl_pd_{slug}"
-        elif streams:
-            h = str(streams[0].get("height", 0))
-            callback_query.data = f"qdl_{h}_{slug}"
-        return await quality_download(client, callback_query)
-
-    buttons.append([InlineKeyboardButton("⬅️ Back", callback_data=f"info_{slug}")])
-
-    await _safe_edit(
-        callback_query,
-        f"📺 **Select Quality for download:**\n\nChoose your preferred resolution:",
-    )
-    try:
-        await callback_query.edit_message_reply_markup(InlineKeyboardMarkup(buttons))
-    except Exception:
-        try:
-            await client.send_message(
-                chat_id=callback_query.from_user.id,
-                text="📺 **Select Quality:**",
-                reply_markup=InlineKeyboardMarkup(buttons),
-            )
-        except Exception:
-            pass
-
-
-async def quality_download(client: Client, callback_query: CallbackQuery):
-    """Download with specific quality (qdl_<quality>_<slug>)."""
-    parts = callback_query.data.split("_", 2)
-    if len(parts) < 3:
-        await callback_query.answer("❌ Invalid format", show_alert=True)
-        return
-
-    quality = parts[1]  # "pd" for pixeldrain, or "720", "1080" etc
-    slug = parts[2]
-
-    log.info("=== QUALITY DOWNLOAD === quality=%s slug=%s user=%s",
-             quality, slug, callback_query.from_user.id)
-
-    from utils.auth import is_approved
-    user_id = callback_query.from_user.id
-    if not await is_approved(user_id):
-        await callback_query.answer("⛔ No access.", show_alert=True)
-        return
-
     chat_id = callback_query.from_user.id
     username = callback_query.from_user.username
     db = get_db()
 
     start_time = time.time()
 
-    await _safe_edit(callback_query, f"⏳ **Downloading {quality}p...**\nStatus: STARTING")
+    await _safe_edit(callback_query, f"⏳ **Downloading...**\n\n{_progress_bar(0)}")
 
     log_msg_id = await log_download_start(client, username, slug)
 
@@ -459,57 +364,48 @@ async def quality_download(client: Client, callback_query: CallbackQuery):
         if log_msg_id:
             await log_download_progress(client, log_msg_id, username, slug, pct)
 
-    # ── Route download based on selected quality ──────────────────
-    if quality == "pd" and dl_url:
-        # Pixeldrain direct download
-        log.info("Quality: Pixeldrain for %s", slug)
+    log.info("Streams for %s: dl_url=%s, stream_count=%d, streams=%s",
+             slug, dl_url, len(streams),
+             [(s["kind"], s["height"], s["url"][:60]) for s in streams[:5]])
+
+    # ── Strategy 1: Pixeldrain (720p, fastest) ──────────────────────
+    if dl_url:
+        log.info("Strategy 1: Pixeldrain for %s → %s", slug, dl_url)
         await _safe_edit(callback_query, f"⬇️ **Downloading via Pixeldrain...**\n\n{_progress_bar(5)}\n\n📁 **File:** {slug}.mp4")
         if log_msg_id:
             await log_download_progress(client, log_msg_id, username, slug, 5)
         downloaded = await _download_direct(dl_url, filename, progress_cb=on_progress)
-    else:
-        # HLS/MP4 — filter by requested height
-        target_height = int(quality) if quality.isdigit() else 0
+        if not downloaded:
+            log.warning("Pixeldrain failed for %s", slug)
 
-        # Try MP4 streams at target height first
-        mp4_streams = [s for s in streams if s["kind"] == "mp4" and s["url"]
-                       and (not target_height or s.get("height") == target_height)]
+    # ── Strategy 2: N_m3u8DL-RE for HLS ────────────────────────────
+    if not downloaded:
+        hls_streams = [s for s in streams if s["kind"] == "hls" and s["url"]]
+        if hls_streams and os.path.exists(N_M3U8DL_RE):
+            stream = hls_streams[0]
+            log.info("Strategy 2: N_m3u8DL-RE %dp for %s", stream["height"], slug)
+            await _safe_edit(callback_query, f"⬇️ **Downloading {stream['height']}p HLS...**\n\n{_progress_bar(20)}")
+            downloaded = await _download_n_m3u8dl(stream["url"], filename)
+
+    # ── Strategy 3: MP4 direct streams ──────────────────────────────
+    if not downloaded:
+        mp4_streams = [s for s in streams if s["kind"] == "mp4" and s["url"]]
         for stream in mp4_streams:
-            log.info("MP4 stream %dp for %s", stream["height"], slug)
-            await _safe_edit(callback_query, f"⬇️ **Downloading {stream['height']}p MP4...**\n\n{_progress_bar(10)}")
+            log.info("Strategy 3: MP4 %dp for %s", stream["height"], slug)
+            await _safe_edit(callback_query, f"⬇️ **Downloading {stream['height']}p MP4...**\n\n{_progress_bar(30)}")
             downloaded = await _download_direct(stream["url"], filename, progress_cb=on_progress)
             if downloaded:
                 break
 
-        # Try HLS at target height with N_m3u8DL-RE
-        if not downloaded:
-            hls_streams = [s for s in streams if s["kind"] == "hls" and s["url"]
-                           and (not target_height or s.get("height") == target_height)]
-            if not hls_streams and target_height:
-                # Fallback: any HLS stream
-                hls_streams = [s for s in streams if s["kind"] == "hls" and s["url"]]
-
-            for stream in hls_streams:
-                if os.path.exists(N_M3U8DL_RE):
-                    log.info("N_m3u8DL-RE HLS %dp for %s", stream["height"], slug)
-                    await _safe_edit(callback_query, f"⬇️ **Downloading {stream['height']}p HLS...**\n\n{_progress_bar(20)}")
-                    if log_msg_id:
-                        await log_download_progress(client, log_msg_id, username, slug, 20)
-                    downloaded = await _download_n_m3u8dl(stream["url"], filename)
-                if not downloaded:
-                    log.info("ffmpeg HLS %dp for %s", stream["height"], slug)
-                    await _safe_edit(callback_query, f"⬇️ **Downloading {stream['height']}p via ffmpeg...**\n\n{_progress_bar(30)}")
-                    if log_msg_id:
-                        await log_download_progress(client, log_msg_id, username, slug, 40)
-                    downloaded = await _download_hls_ffmpeg(stream["url"], filename)
-                if downloaded:
-                    break
-
-        # Last resort: try pixeldrain if available
-        if not downloaded and dl_url:
-            log.info("Fallback: Pixeldrain for %s", slug)
-            await _safe_edit(callback_query, f"⬇️ **Fallback: Pixeldrain...**\n\n{_progress_bar(10)}")
-            downloaded = await _download_direct(dl_url, filename, progress_cb=on_progress)
+    # ── Strategy 4: ffmpeg HLS fallback ─────────────────────────────
+    if not downloaded:
+        hls_streams = [s for s in streams if s["kind"] == "hls" and s["url"]]
+        for stream in hls_streams:
+            log.info("Strategy 4: ffmpeg %dp for %s", stream["height"], slug)
+            await _safe_edit(callback_query, f"⬇️ **Downloading {stream['height']}p via ffmpeg...**\n\n{_progress_bar(40)}")
+            downloaded = await _download_hls_ffmpeg(stream["url"], filename)
+            if downloaded:
+                break
 
     # ── Failed ──────────────────────────────────────────────────────
     if not downloaded:
