@@ -2,8 +2,5 @@ pyrofork>=2.3.0
 TgCrypto-pyrofork
 pymongo[srv]
 dnspython
-aiohttp
+aiohttp>=3.9.0
 motor
-cloudscraper
-beautifulsoup4
-playwright

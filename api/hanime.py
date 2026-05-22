@@ -1,5 +1,6 @@
 """
-Async wrapper around hentaihaven.xxx APIs (switched from hanime.tv).
+Wrapper around external hentai-api service (Node.js).
+Uses https://github.com/sulvii/hentai-api
 
 Functions:
     search(query, page=0)   -> list of hit dicts
@@ -10,80 +11,38 @@ Backward compatible with old hanime.tv signatures.
 """
 
 import asyncio
-import json
 import logging
 import re
-import random
-from urllib.parse import urljoin
+from typing import Optional
 
 try:
-    import cloudscraper
-    from bs4 import BeautifulSoup
+    import aiohttp
 except ImportError:
-    cloudscraper = None
-    BeautifulSoup = None
-
-try:
-    from playwright.async_api import async_playwright
-except ImportError:
-    async_playwright = None
+    aiohttp = None
 
 log = logging.getLogger(__name__)
 
-BASE_URL = "https://hentaihaven.xxx"
-
-_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Cache-Control": "max-age=0",
-    "Referer": BASE_URL,
-}
+# Change this to your deployed hentai-api URL
+HENTAI_API_BASE = "https://hentai-api.example.com"  # Replace with actual URL
+# For local testing: "http://localhost:3000"
 
 
-def _create_scraper():
-    """Create a cloudscraper instance that bypasses Cloudflare."""
-    if cloudscraper is None:
-        raise ImportError("cloudscraper is required. Run: pip install cloudscraper")
-    
-    # Try multiple browser profiles to avoid detection
-    browsers = [
-        {"browser": "chrome", "platform": "windows", "desktop": True},
-        {"browser": "firefox", "platform": "windows", "desktop": True},
-        {"browser": "chrome", "platform": "linux", "desktop": True},
-    ]
-    
-    browser_config = random.choice(browsers)
+async def _get_http(url: str, timeout: int = 20) -> dict:
+    """Helper to make async HTTP GET requests."""
+    if aiohttp is None:
+        raise ImportError("aiohttp is required. Run: pip install aiohttp")
     
     try:
-        scraper = cloudscraper.create_scraper(
-            browser=browser_config,
-            delay=random.uniform(1, 3),
-        )
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        ]
-        scraper.headers.update({"User-Agent": random.choice(user_agents)})
-        scraper.headers.update(_HEADERS)
-        return scraper
-    except Exception:
-        scraper = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows"})
-        scraper.headers.update(_HEADERS)
-        return scraper
-
-
-def _slug_from_url(url: str) -> str:
-    """Extract slug from hentaihaven URL."""
-    match = re.search(r"/watch/([^/]+)/episode-(\d+)", url)
-    if match:
-        return f"{match.group(1)}-{match.group(2)}"
-    match = re.search(r"/watch/([^/]+)/?", url)
-    if match:
-        return match.group(1)
-    return url.strip("/").split("/")[-1]
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                else:
+                    log.error(f"API error: {resp.status} for {url}")
+                    return {}
+    except Exception as e:
+        log.error(f"HTTP request failed: {e}")
+        return {}
 
 
 def _episode_from_slug(slug: str) -> tuple[str, int]:
@@ -97,82 +56,42 @@ def _episode_from_slug(slug: str) -> tuple[str, int]:
 # ── Search ──────────────────────────────────────────────────────────────
 
 async def search(query: str, page: int = 0) -> list[dict]:
-    """Search hentaihaven.xxx. Returns list of hit dicts compatible with old hanime API."""
-    if BeautifulSoup is None:
-        raise ImportError("beautifulsoup4 is required. Run: pip install beautifulsoup4")
-    if async_playwright is None:
-        raise ImportError("playwright is required. Run: pip install playwright")
-
-    # Use Playwright to bypass Cloudflare
-    search_url = f"{BASE_URL}/?s={query}&post_type=wp-manga"
-    log.info("Searching for %r via Playwright at %s", query, search_url)
+    """
+    Search hentaihaven via the external hentai-api service.
+    Returns list of hit dicts compatible with old hanime API.
+    """
+    log.info(f"Searching for '{query}' via hentai-api")
     
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context()
-        page = await context.new_page()
-        
-        try:
-            await page.goto(search_url, timeout=60000, wait_until="networkidle")
-            await asyncio.sleep(3)
-            html = await page.content()
-        except Exception as e:
-            log.error("Search page load failed for query=%r: %s", query, e)
-            await browser.close()
-            return []
-        finally:
-            await browser.close()
+    url = f"{HENTAI_API_BASE}/api/hentaihaven/search?query={query}&page={page}"
+    data = await _get_http(url)
     
-    soup = BeautifulSoup(html, 'html.parser')
+    if not data or "results" not in data:
+        log.warning(f"No results from hentai-api for query='{query}'")
+        return []
     
-    # Find all watch links in the page
-    watch_links = soup.find_all('a', href=re.compile(r'/watch/[^/]+/$'))
-    
-    seen = set()
     hits = []
-    for a in watch_links:
-        href = a.get('href', '')
-        if not href or href in seen:
-            continue
-        seen.add(href)
-        
-        series_slug = href.rstrip('/').split('/')[-1]
-        if not series_slug:
-            continue
-            
-        # Get title from image alt or text
-        title = "Unknown"
-        img = a.find('img')
-        if img:
-            alt = img.get('alt', '')
-            title = alt.replace(' cover', '').strip() or "Unknown"
-        
-        poster_url = ""
-        if img:
-            poster_url = img.get('src', '')
-        
-        slug = series_slug  # First episode
-        
+    for item in data.get("results", []):
         hits.append({
-            "id": 0,
-            "slug": slug,
-            "name": title,
-            "url": href,
-            "poster_url": poster_url,
-            "cover_url": poster_url,
-            "description": "",
-            "views": 0,
-            "interests": 0,
-            "likes": 0,
-            "dislikes": 0,
-            "duration_in_ms": 0,
-            "brand": "N/A",
-            "tags": [],
-            "titles": [title],
-            "created_at": 0,
-            "released_at": 0,
+            "id": item.get("id", 0),
+            "slug": item.get("slug", item.get("id", "")),
+            "name": item.get("title", item.get("name", "Unknown")),
+            "url": item.get("url", ""),
+            "poster_url": item.get("poster", item.get("image", "")),
+            "cover_url": item.get("cover", item.get("poster", "")),
+            "description": item.get("description", ""),
+            "views": item.get("views", 0),
+            "interests": item.get("interests", 0),
+            "likes": item.get("likes", 0),
+            "dislikes": item.get("dislikes", 0),
+            "duration_in_ms": item.get("duration_ms", 0),
+            "brand": item.get("brand", "N/A"),
+            "tags": item.get("tags", []),
+            "titles": item.get("titles", [item.get("title", item.get("name", "Unknown"))]),
+            "created_at": item.get("created_at", 0),
+            "released_at": item.get("released_at", 0),
         })
     
+    log.info(f"Found {len(hits)} results")
     return hits
 
 
@@ -183,16 +102,13 @@ async def details(slug: str) -> dict:
     Get detailed info for a video by slug.
     Returns dict with same shape as old hanime API for compatibility.
     """
-    series, ep_num = _episode_from_slug(slug)
-    url = f"{BASE_URL}/watch/{series}/episode-{ep_num}"
-
-    scraper = _create_scraper()
-    try:
-        resp = scraper.get(url, headers=_HEADERS, timeout=20)
-        resp.raise_for_status()
-        html = resp.text
-    except Exception as e:
-        log.error("Details fetch failed for slug=%s: %s", slug, e)
+    log.info(f"Fetching details for slug='{slug}'")
+    
+    url = f"{HENTAI_API_BASE}/api/hentaihaven/info?id={slug}"
+    data = await _get_http(url)
+    
+    if not data:
+        log.warning(f"No details found for slug='{slug}'")
         return {
             "name": slug,
             "slug": slug,
@@ -210,136 +126,90 @@ async def details(slug: str) -> dict:
             "titles": [],
             "episodes": [],
         }
-
-    soup = BeautifulSoup(html, 'html.parser')
     
-    # Extract title
-    title = series.replace('-', ' ').title()
-    title_tag = soup.find('title')
-    if title_tag:
-        title = title_tag.get_text(strip=True).split(" - ")[0]
-    
-    poster_url = ""
-    og_image = soup.find('meta', property='og:image')
-    if og_image and og_image.get('content'):
-        poster_url = og_image['content']
-    
-    description = ""
-    og_desc = soup.find('meta', property='og:description')
-    if og_desc and og_desc.get('content'):
-        description = og_desc['content']
-    
-    # Build episode list - look for episode links on the page
+    # Parse episodes
     episodes = []
-    ep_links = soup.find_all('a', href=re.compile(rf'/watch/{series}/episode-(\d+)'))
-    ep_numbers = set()
-    for link in ep_links:
-        ep_match = re.search(r'/episode-(\d+)', link.get('href', ''))
-        if ep_match:
-            ep_numbers.add(int(ep_match.group(1)))
+    ep_list = data.get("episodes", [])
+    if isinstance(ep_list, list):
+        for ep in ep_list:
+            if isinstance(ep, dict):
+                episodes.append({
+                    "name": ep.get("name", f"Episode {ep.get('number', 1)}"),
+                    "slug": ep.get("slug", ep.get("id", "")),
+                    "poster_url": ep.get("poster", ep.get("image", "")),
+                })
+            else:
+                # If episodes are just strings/IDs
+                episodes.append({
+                    "name": f"Episode {ep}",
+                    "slug": f"{slug}-{ep}",
+                    "poster_url": "",
+                })
     
-    if ep_numbers:
-        for i in sorted(ep_numbers):
-            episodes.append({
-                "name": f"Episode {i}",
-                "slug": f"{series}-{i}",
-                "poster_url": poster_url,
-            })
-    
-    # If no episodes found, just use the current one
-    if not episodes:
-        episodes.append({
-            "name": f"Episode {ep_num}",
-            "slug": slug,
-            "poster_url": poster_url,
-        })
-
     return {
-        "name": title,
+        "name": data.get("title", data.get("name", slug)),
         "slug": slug,
-        "views": 0,
-        "poster_url": poster_url,
-        "cover_url": poster_url,
-        "description": description,
-        "released_date": "N/A",
-        "likes": 0,
-        "dislikes": 0,
-        "duration": "N/A",
-        "duration_ms": 0,
-        "brand": "N/A",
-        "tags": [],
-        "titles": [],
+        "views": data.get("views", 0),
+        "poster_url": data.get("poster", data.get("image", "")),
+        "cover_url": data.get("cover", data.get("poster", "")),
+        "description": data.get("description", ""),
+        "released_date": data.get("released_date", "N/A"),
+        "likes": data.get("likes", 0),
+        "dislikes": data.get("dislikes", 0),
+        "duration": data.get("duration", "N/A"),
+        "duration_ms": data.get("duration_ms", 0),
+        "brand": data.get("brand", "N/A"),
+        "tags": data.get("tags", []),
+        "titles": data.get("titles", [data.get("title", data.get("name", slug))]),
         "episodes": episodes,
     }
 
 
 # ── Streams ─────────────────────────────────────────────────────────────
 
-async def _get_streams_with_playwright(slug: str) -> dict:
-    """Use Playwright to intercept real stream URLs from the player."""
-    if async_playwright is None:
-        raise ImportError("playwright is required. Run: pip install playwright")
-
-    series, ep_num = _episode_from_slug(slug)
-    url = f"{BASE_URL}/watch/{series}/episode-{ep_num}"
-
-    log.info("Using Playwright to get streams for %s", slug)
+async def get_streams(slug: str) -> dict:
+    """
+    Get stream URLs for a video via the hentai-api service.
+    """
+    log.info(f"Fetching streams for slug='{slug}'")
+    
+    url = f"{HENTAI_API_BASE}/api/hentaihaven/streams?id={slug}"
+    data = await _get_http(url, timeout=60)
+    
+    if not data:
+        log.warning(f"No streams found for slug='{slug}'")
+        return {"streams": [], "dl_url": ""}
+    
     stream_urls = []
-    seen_urls = set()
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context()
-        page = await context.new_page()
-
-        async def handle_response(response):
-            resp_url = response.url
-            ct = response.headers.get("content-type", "")
-            if "m3u8" in resp_url or "application/vnd.apple.mpegurl" in ct:
-                if resp_url not in seen_urls:
-                    seen_urls.add(resp_url)
-                    log.info("Intercepted stream URL: %s", resp_url)
-                    # Determine quality from URL
-                    quality = 0
-                    if "480" in resp_url or "480p" in resp_url:
-                        quality = 480
-                    elif "720" in resp_url or "720p" in resp_url:
-                        quality = 720
-                    elif "1080" in resp_url or "1080p" in resp_url:
-                        quality = 1080
-
-                    stream_urls.append({
-                        "url": resp_url,
-                        "height": quality,
-                        "width": quality * 16 // 9 if quality else 1280,
-                        "kind": "hls",
-                        "filename": f"{slug}.mp4",
-                        "filesize_mbs": 0,
-                        "is_downloadable": True,
-                    })
-
-        page.on("response", handle_response)
-
-        try:
-            await page.goto(url, timeout=60000)
-            await asyncio.sleep(8)
-        except Exception as e:
-            log.error("Playwright page load failed: %s", e)
-        finally:
-            await browser.close()
-
+    for stream in data.get("streams", []):
+        if isinstance(stream, dict):
+            stream_urls.append({
+                "url": stream.get("url", ""),
+                "height": stream.get("height", stream.get("quality", 0)),
+                "width": stream.get("width", 1280),
+                "kind": stream.get("kind", "hls"),
+                "filename": f"{slug}.mp4",
+                "filesize_mbs": stream.get("filesize_mbs", 0),
+                "is_downloadable": True,
+            })
+        else:
+            # If stream is just a URL string
+            stream_urls.append({
+                "url": stream,
+                "height": 0,
+                "width": 1280,
+                "kind": "hls",
+                "filename": f"{slug}.mp4",
+                "filesize_mbs": 0,
+                "is_downloadable": True,
+            })
+    
+    # Sort by quality (highest first)
     stream_urls.sort(key=lambda s: s.get("height", 0) or 0, reverse=True)
     dl_url = stream_urls[0]["url"] if stream_urls else ""
-
+    
+    log.info(f"Found {len(stream_urls)} streams")
     return {
         "streams": stream_urls,
         "dl_url": dl_url,
     }
-
-
-async def get_streams(slug: str) -> dict:
-    """
-    Get stream URLs for a video.
-    Uses Playwright for reliable interception of HLS stream URLs.
-    """
-    return await _get_streams_with_playwright(slug)
