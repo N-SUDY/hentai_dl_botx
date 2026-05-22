@@ -459,45 +459,57 @@ async def quality_download(client: Client, callback_query: CallbackQuery):
         if log_msg_id:
             await log_download_progress(client, log_msg_id, username, slug, pct)
 
-    # ── Strategy 1: Direct download URL (fastest) ───────────────────
-    if dl_url:
-        log.info("Strategy 1: Direct URL for %s", slug)
-        await _safe_edit(callback_query, "⬇️ **Downloading via direct link...** 🚀")
+    # ── Route download based on selected quality ──────────────────
+    if quality == "pd" and dl_url:
+        # Pixeldrain direct download
+        log.info("Quality: Pixeldrain for %s", slug)
+        await _safe_edit(callback_query, f"⬇️ **Downloading via Pixeldrain...**\n\n{_progress_bar(5)}\n\n📁 **File:** {slug}.mp4")
         if log_msg_id:
             await log_download_progress(client, log_msg_id, username, slug, 5)
         downloaded = await _download_direct(dl_url, filename, progress_cb=on_progress)
+    else:
+        # HLS/MP4 — filter by requested height
+        target_height = int(quality) if quality.isdigit() else 0
 
-    # ── Strategy 2: N_m3u8DL-RE for HLS (fast, multi-threaded) ─────
-    if not downloaded:
-        hls_streams = [s for s in streams if s["kind"] == "hls" and s["url"]]
-        if hls_streams and os.path.exists(N_M3U8DL_RE):
-            log.info("Strategy 2: N_m3u8DL-RE for %s", slug)
-            await _safe_edit(callback_query, "⬇️ **Downloading via N_m3u8DL-RE...** 🚀\n(Multi-threaded HLS)")
-            if log_msg_id:
-                await log_download_progress(client, log_msg_id, username, slug, 20)
-            downloaded = await _download_n_m3u8dl(hls_streams[0]["url"], filename)
-
-    # ── Strategy 3: MP4 direct streams ──────────────────────────────
-    if not downloaded:
-        mp4_streams = [s for s in streams if s["kind"] == "mp4" and s["url"]]
+        # Try MP4 streams at target height first
+        mp4_streams = [s for s in streams if s["kind"] == "mp4" and s["url"]
+                       and (not target_height or s.get("height") == target_height)]
         for stream in mp4_streams:
-            log.info("Strategy 3: MP4 stream %dp for %s", stream["height"], slug)
-            await _safe_edit(callback_query, f"⬇️ **Downloading {stream['height']}p MP4...**")
+            log.info("MP4 stream %dp for %s", stream["height"], slug)
+            await _safe_edit(callback_query, f"⬇️ **Downloading {stream['height']}p MP4...**\n\n{_progress_bar(10)}")
             downloaded = await _download_direct(stream["url"], filename, progress_cb=on_progress)
             if downloaded:
                 break
 
-    # ── Strategy 4: ffmpeg HLS fallback (slowest) ───────────────────
-    if not downloaded:
-        hls_streams = [s for s in streams if s["kind"] == "hls" and s["url"]]
-        for stream in hls_streams:
-            log.info("Strategy 4: ffmpeg HLS %dp for %s", stream["height"], slug)
-            await _safe_edit(callback_query, f"⬇️ **Downloading {stream['height']}p via ffmpeg...**\n(This may take a moment)")
-            if log_msg_id:
-                await log_download_progress(client, log_msg_id, username, slug, 40)
-            downloaded = await _download_hls_ffmpeg(stream["url"], filename)
-            if downloaded:
-                break
+        # Try HLS at target height with N_m3u8DL-RE
+        if not downloaded:
+            hls_streams = [s for s in streams if s["kind"] == "hls" and s["url"]
+                           and (not target_height or s.get("height") == target_height)]
+            if not hls_streams and target_height:
+                # Fallback: any HLS stream
+                hls_streams = [s for s in streams if s["kind"] == "hls" and s["url"]]
+
+            for stream in hls_streams:
+                if os.path.exists(N_M3U8DL_RE):
+                    log.info("N_m3u8DL-RE HLS %dp for %s", stream["height"], slug)
+                    await _safe_edit(callback_query, f"⬇️ **Downloading {stream['height']}p HLS...**\n\n{_progress_bar(20)}")
+                    if log_msg_id:
+                        await log_download_progress(client, log_msg_id, username, slug, 20)
+                    downloaded = await _download_n_m3u8dl(stream["url"], filename)
+                if not downloaded:
+                    log.info("ffmpeg HLS %dp for %s", stream["height"], slug)
+                    await _safe_edit(callback_query, f"⬇️ **Downloading {stream['height']}p via ffmpeg...**\n\n{_progress_bar(30)}")
+                    if log_msg_id:
+                        await log_download_progress(client, log_msg_id, username, slug, 40)
+                    downloaded = await _download_hls_ffmpeg(stream["url"], filename)
+                if downloaded:
+                    break
+
+        # Last resort: try pixeldrain if available
+        if not downloaded and dl_url:
+            log.info("Fallback: Pixeldrain for %s", slug)
+            await _safe_edit(callback_query, f"⬇️ **Fallback: Pixeldrain...**\n\n{_progress_bar(10)}")
+            downloaded = await _download_direct(dl_url, filename, progress_cb=on_progress)
 
     # ── Failed ──────────────────────────────────────────────────────
     if not downloaded:
