@@ -100,18 +100,29 @@ async def search(query: str, page: int = 0) -> list[dict]:
     """Search hentaihaven.xxx. Returns list of hit dicts compatible with old hanime API."""
     if BeautifulSoup is None:
         raise ImportError("beautifulsoup4 is required. Run: pip install beautifulsoup4")
+    if async_playwright is None:
+        raise ImportError("playwright is required. Run: pip install playwright")
 
-    scraper = _create_scraper()
-    try:
-        # Use WordPress search parameter instead of /search/ path
-        search_url = f"{BASE_URL}/?s={query}"
-        resp = scraper.get(search_url, headers=_HEADERS, timeout=20)
-        resp.raise_for_status()
-        html = resp.text
-    except Exception as e:
-        log.error("Search failed for query=%r: %s", query, e)
-        return []
-
+    # Use Playwright to bypass Cloudflare
+    search_url = f"{BASE_URL}/?s={query}"
+    log.info("Searching for %r via Playwright", query)
+    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context()
+        page = await context.new_page()
+        
+        try:
+            await page.goto(search_url, timeout=60000, wait_until="networkidle")
+            await asyncio.sleep(3)
+            html = await page.content()
+        except Exception as e:
+            log.error("Search page load failed for query=%r: %s", query, e)
+            await browser.close()
+            return []
+        finally:
+            await browser.close()
+    
     soup = BeautifulSoup(html, 'html.parser')
     
     # Find all watch links in the page
