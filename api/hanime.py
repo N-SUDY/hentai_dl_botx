@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import re
+import random
 from urllib.parse import urljoin
 
 try:
@@ -35,6 +36,8 @@ _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "max-age=0",
     "Referer": BASE_URL,
 }
 
@@ -43,13 +46,33 @@ def _create_scraper():
     """Create a cloudscraper instance that bypasses Cloudflare."""
     if cloudscraper is None:
         raise ImportError("cloudscraper is required. Run: pip install cloudscraper")
-    return cloudscraper.create_scraper(
-        browser={
-            "browser": "chrome",
-            "platform": "windows",
-            "desktop": True,
-        },
-    )
+    
+    # Try multiple browser profiles to avoid detection
+    browsers = [
+        {"browser": "chrome", "platform": "windows", "desktop": True},
+        {"browser": "firefox", "platform": "windows", "desktop": True},
+        {"browser": "chrome", "platform": "linux", "desktop": True},
+    ]
+    
+    browser_config = random.choice(browsers)
+    
+    try:
+        scraper = cloudscraper.create_scraper(
+            browser=browser_config,
+            delay=random.uniform(1, 3),
+        )
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        ]
+        scraper.headers.update({"User-Agent": random.choice(user_agents)})
+        scraper.headers.update(_HEADERS)
+        return scraper
+    except Exception:
+        scraper = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows"})
+        scraper.headers.update(_HEADERS)
+        return scraper
 
 
 def _slug_from_url(url: str) -> str:
@@ -71,24 +94,6 @@ def _episode_from_slug(slug: str) -> tuple[str, int]:
     return slug, 1
 
 
-def _unix_to_date(ts: int | float | None) -> str:
-    from datetime import datetime, timezone
-    if not ts:
-        return "N/A"
-    try:
-        return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d")
-    except (ValueError, OSError):
-        return "N/A"
-
-
-def _format_duration(ms: int | None) -> str:
-    if not ms:
-        return "N/A"
-    total_secs = int(ms) // 1000
-    mins, secs = divmod(total_secs, 60)
-    return f"{mins}:{secs:02d}"
-
-
 # ── Search ──────────────────────────────────────────────────────────────
 
 async def search(query: str, page: int = 0) -> list[dict]:
@@ -98,12 +103,13 @@ async def search(query: str, page: int = 0) -> list[dict]:
 
     scraper = _create_scraper()
     try:
-        search_url = f"{BASE_URL}/search/{query}"
+        # Use WordPress search parameter instead of /search/ path
+        search_url = f"{BASE_URL}/?s={query}"
         resp = scraper.get(search_url, headers=_HEADERS, timeout=20)
         resp.raise_for_status()
         html = resp.text
-    except Exception:
-        log.exception("Search failed for query=%r", query)
+    except Exception as e:
+        log.error("Search failed for query=%r: %s", query, e)
         return []
 
     soup = BeautifulSoup(html, 'html.parser')
@@ -174,8 +180,8 @@ async def details(slug: str) -> dict:
         resp = scraper.get(url, headers=_HEADERS, timeout=20)
         resp.raise_for_status()
         html = resp.text
-    except Exception:
-        log.exception("Details fetch failed for slug=%s", slug)
+    except Exception as e:
+        log.error("Details fetch failed for slug=%s: %s", slug, e)
         return {
             "name": slug,
             "slug": slug,
@@ -306,8 +312,8 @@ async def _get_streams_with_playwright(slug: str) -> dict:
         try:
             await page.goto(url, timeout=60000)
             await asyncio.sleep(8)
-        except Exception:
-            log.exception("Playwright page load failed")
+        except Exception as e:
+            log.error("Playwright page load failed: %s", e)
         finally:
             await browser.close()
 
