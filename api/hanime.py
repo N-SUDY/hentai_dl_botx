@@ -104,8 +104,8 @@ async def search(query: str, page: int = 0) -> list[dict]:
         raise ImportError("playwright is required. Run: pip install playwright")
 
     # Use Playwright to bypass Cloudflare
-    search_url = f"{BASE_URL}/?s={query}"
-    log.info("Searching for %r via Playwright", query)
+    search_url = f"{BASE_URL}/?s={query}&post_type=wp-manga"
+    log.info("Searching for %r via Playwright at %s", query, search_url)
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
