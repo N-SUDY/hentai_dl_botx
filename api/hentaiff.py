@@ -156,25 +156,42 @@ class HentaiFFScraper:
         soup = BeautifulSoup(html, 'html.parser')
         
         title = soup.find('h1', class_='entry-title').text.strip() if soup.find('h1', class_='entry-title') else series_id.replace('-', ' ').title()
-        cover = soup.select_one('.anime-thumbnail img')
-        cover_url = cover.get('src') if cover else None
+        
+        # Poster/cover image - try multiple selectors
+        cover_url = None
+        for selector in ['.thumbook .thumb img', '.thumb img', 'img.wp-post-image']:
+            cover = soup.select_one(selector)
+            if cover:
+                cover_url = cover.get('src')
+                if cover_url:
+                    break
 
+        # Synopsis/description from entry-content
         summary = ""
         summary_div = soup.find('div', class_='entry-content')
         if summary_div:
-            summary_p = summary_div.find('p')
-            if summary_p:
-                summary = summary_p.text.strip()
+            # Get all paragraph text
+            paragraphs = summary_div.find_all('p')
+            if paragraphs:
+                summary = ' '.join(p.text.strip() for p in paragraphs if p.text.strip())
+            elif summary_div.text.strip():
+                summary = summary_div.text.strip()
 
-        genres = []
-        genre_div = soup.find('div', class_='genres')
-        if genre_div:
-            for a_tag in genre_div.find_all('a'):
-                genres.append({
-                    'name': a_tag.text.strip(),
-                    'url': a_tag.get('href')
-                })
+        # Genres/tags from genxed div
+        tags = []
+        genxed = soup.find('div', class_='genxed')
+        if genxed:
+            for a_tag in genxed.find_all('a'):
+                tags.append(a_tag.text.strip())
+        
+        # Fallback: try div.genres
+        if not tags:
+            genre_div = soup.find('div', class_='genres')
+            if genre_div:
+                for a_tag in genre_div.find_all('a'):
+                    tags.append(a_tag.text.strip())
 
+        # Episodes from eplister
         episodes = []
         ep_list = soup.find('div', class_='eplister')
         if ep_list:
@@ -198,6 +215,7 @@ class HentaiFFScraper:
                         episodes.append({
                             'id': ep_id,
                             'slug': ep_id,
+                            'name': ep_title,
                             'title': ep_title,
                             'number': ep_number,
                             'released': ep_date,
@@ -212,7 +230,9 @@ class HentaiFFScraper:
             'cover': cover_url,
             'poster_url': cover_url,
             'summary': summary,
-            'genres': genres,
+            'description': summary,
+            'tags': tags,
+            'genres': tags,
             'episodes': episodes,
             'totalEpisodes': len(episodes)
         }
