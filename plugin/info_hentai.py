@@ -9,9 +9,9 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
 )
 
-from api.hentaiff import HentaiFFScraper
+from api.hanime_api import HanimeAPI, BASE_URL
 
-hentaiff_scraper = HentaiFFScraper()
+hanime_api = HanimeAPI()
 from utils.auth import approved_only
 from utils.fsub import force_sub
 from utils.poster import download_poster
@@ -62,7 +62,7 @@ async def infohentai(client: Client, callback_query: CallbackQuery):
 
     try:
         log.info("Fetching details for %s...", slug)
-        info = hentaiff_scraper.details(slug)
+        info = hanime_api.details(slug)
         if not info:
             raise ValueError(f"No details found for slug={slug}")
         log.info("Got details: name=%s, episodes=%d, poster=%s",
@@ -79,11 +79,7 @@ async def infohentai(client: Client, callback_query: CallbackQuery):
     poster = info["poster_url"]
     summary = info["description"]
     tags = info["tags"]
-    # Episodes are extracted from the series page if available.
-    # We will assume each 'slug' represents a single anime entry for now.
-    # If an anime has multiple parts/episodes, they are typically linked within the description.
-    # The bot will treat each slug as a single downloadable unit.
-    episodes = [] # No direct episode list from hentaiff.com details
+    episodes = info.get("episodes", [])
 
     tags_str = ", ".join(tags[:10]) if tags else "N/A"
     if len(tags) > 10:
@@ -93,7 +89,7 @@ async def infohentai(client: Client, callback_query: CallbackQuery):
         f"**{name}**\n\n"
         f"📝 **Summary:** {summary}\n"
         f"🔖 **Tags:** {tags_str}\n\n"
-        f"🔗 **Link:** {BASE_URL}/anime/{slug}/"
+        f"🔗 **Link:** {BASE_URL}/videos/hentai/{slug}"
 
     )
 
@@ -152,7 +148,7 @@ async def episode_info(client: Client, callback_query: CallbackQuery):
         pass
 
     try:
-        info = hentaiff_scraper.details(slug)
+        info = hanime_api.details(slug)
         if not info:
             raise ValueError(f"No details found for slug={slug}")
     except Exception:

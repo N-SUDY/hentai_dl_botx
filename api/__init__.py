@@ -1,2 +1,1 @@
-# api package
-from .hentaiff import HentaiFFScraper
+from .hanime_api import HanimeAPI

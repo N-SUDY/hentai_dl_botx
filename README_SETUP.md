@@ -35,7 +35,7 @@ MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/hentai_dl_bot
 HENTAI_API_URL=http://localhost:3000  # Change to your deployed URL
 ```
 
-**Update `api/hentaiff.py`:**
+**Update `api/hanime_api.py`:**
 ```python
 HENTAI_API_BASE = "http://localhost:3000"  # Your hentai-api URL
 ```
@@ -51,7 +51,7 @@ python bot.py
 ```
 Telegram Bot
     ↓
-Python API Layer (api/hentaiff.py)
+Python API Layer (api/hanime_api.py)
     ↓
 External hentai-api Service (Node.js)
     ↓
@@ -73,7 +73,7 @@ HentaiHaven Website
 ## Files
 
 - `bot.py` - Main Telegram bot
-- `api/hentaiff.py` - API wrapper (calls hentai-api)
+- `api/hanime_api.py` - API wrapper (calls hentai-api)
 - `plugin/` - Command handlers
 - `utils/` - Utilities (auth, db)
 

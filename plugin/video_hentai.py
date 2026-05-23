@@ -15,9 +15,9 @@ from pyrogram.types import (
 
 import re
 
-from api.hentaiff import HentaiFFScraper, BASE_URL
+from api.hanime_api import HanimeAPI, BASE_URL
 
-hentaiff_scraper = HentaiFFScraper()
+hanime_api = HanimeAPI()
 from utils.auth import approved_only
 from utils.fsub import force_sub
 from utils.db import get_db
@@ -47,36 +47,43 @@ async def hentailink(client: Client, callback_query: CallbackQuery):
     slug = callback_query.data.split("_", 1)[1]
 
     try:
-        data = hentaiff_scraper.get_streams(slug)
+        data = hanime_api.get_streams(slug)
     except Exception:
         log.exception("Failed to fetch streams for slug=%s", slug)
         await callback_query.answer("❌ API unavailable, try again later.", show_alert=True)
         return
 
-    sources = data["sources"]
+    sources = data.get("sources", [])
+    streams = data.get("streams", [])
 
-    if not sources:
+    if not sources and not streams:
         await callback_query.answer("No stream links available.", show_alert=True)
         return
 
     keyboard = []
-    for source in sources:
-        label = source["label"]
-        url = source["url"]
-        s_type = source["type"]
+    # Add hanime.tv watch link
+    keyboard.append([InlineKeyboardButton(f"▶️ Watch on Hanime.tv", url=f"{BASE_URL}/videos/hentai/{slug}")])
 
-        if s_type == "iframe" or s_type == "iframe_decoded":
-            label = f"▶️ Stream ({label})"
+    for source in sources:
+        label = source.get("label", "Stream")
+        url = source.get("url", "")
+        s_type = source.get("type", "")
+
+        if s_type == "hls":
+            label = f"▶️ HLS Stream ({label})"
         elif s_type == "direct_download":
             label = f"⬇️ Download ({label})"
+        else:
+            label = f"▶️ Stream ({label})"
         
-        keyboard.append([InlineKeyboardButton(label, url=url)])
+        if url:
+            keyboard.append([InlineKeyboardButton(label, url=url)])
 
     keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data=f"info_{slug}")])
 
     await callback_query.edit_message_text(
         f"▶️ Streaming **{slug}**\n"
-        f"{BASE_URL}/anime/{slug}/\n\n"
+        f"{BASE_URL}/videos/hentai/{slug}\n\n"
         "Please share the bot if you like it ☺️",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
@@ -293,21 +300,30 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
 
     # Fetch streams
     try:
-        data = hentaiff_scraper.get_streams(slug)
+        data = hanime_api.get_streams(slug)
     except Exception:
         log.exception("Failed to fetch streams for slug=%s", slug)
         await _safe_edit(callback_query, "❌ API unavailable. Please try again later.")
         await log_error(client, username, f"Stream fetch failed for {slug}")
         return
 
-    sources = data["sources"]
-    dl_url = None
+    dl_url = data.get("dl_url", "")
+    streams = data.get("streams", [])
+    sources = data.get("sources", [])
 
-    # Prioritize direct download links
-    direct_download_source = next((s for s in sources if s["type"] == "direct_download"), None)
-    if direct_download_source:
-        dl_url = direct_download_source["url"]
-        log.info("Using direct download URL: %s", dl_url)
+    log.info("Sources for %s: dl_url=%s, streams=%d, sources=%d",
+             slug, dl_url[:60] if dl_url else None, len(streams), len(sources))
+
+    if not dl_url and not streams:
+        elapsed = int(time.time() - start_time)
+        await _safe_edit(
+            callback_query,
+            "❌ **No download sources available for this video.**\n\n"
+            "This title may be region-locked or not yet available for download on the server.\n"
+            "Try another episode or title."
+        )
+        await log_error(client, username, f"No sources/dl_url for {slug}")
+        return
 
     filename = f"{slug}.mp4"
     downloaded = False
@@ -318,47 +334,32 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
         bar = _progress_bar(pct)
         await _safe_edit(
             callback_query,
-            f"⬇️ **Downloading...**\\n\\n"
-            f"{bar}\\n\\n"
-            f"⏱ **Elapsed:** {elapsed}s\\n"
+            f"⬇️ **Downloading...**\n\n"
+            f"{bar}\n\n"
+            f"⏱ **Elapsed:** {elapsed}s\n"
             f"📁 **File:** {slug}.mp4"
         )
         if log_msg_id:
             await log_download_progress(client, log_msg_id, username, slug, pct)
 
-    log.info("Sources for %s: dl_url=%s, source_count=%d, sources=%s",
-             slug, dl_url, len(sources),
-             [(s["type"], s["label"], s["url"][:60]) for s in sources[:5]])
-
-    if not dl_url and not sources:
-        elapsed = int(time.time() - start_time)
-        await _safe_edit(
-            callback_query,
-            "❌ **No download sources available for this video.**\\n\\n"
-            "This title may be region-locked or not yet available for download on the server.\\n"
-            "Try another episode or title."
-        )
-        await log_error(client, username, f"No sources/dl_url for {slug}")
-        return
-
-    if dl_url:
+    # Try direct download first (if URL is a direct mp4 link)
+    if dl_url and not dl_url.endswith('.m3u8'):
         downloaded = await _download_direct(dl_url, filename, on_progress)
 
+    # Try HLS download using N_m3u8DL-RE or ffmpeg
     if not downloaded:
-        # Fallback to iframe sources and try to extract video URL
-        for source in sources:
-            if source["type"] == "iframe" or source["type"] == "iframe_decoded":
-                iframe_url = source["url"]
-                log.info("Attempting to extract video from iframe: %s", iframe_url)
-                # This is complex and might require a headless browser or more advanced scraping
-                # For now, we will just log and skip if direct download is not available
-                log.warning("Iframe video extraction not implemented. Skipping iframe source.")
-                # If you want to implement this, you'd need to add a new function similar to _download_direct
-                # that can parse the iframe content and find the actual video URL.
-                # For now, we'll just break and report no download if direct isn't found.
-                break
-            if downloaded:
-                break
+        hls_url = dl_url if dl_url else None
+        if not hls_url:
+            # Find best HLS stream
+            for s in streams:
+                if s.get('kind') == 'hls' and s.get('url'):
+                    hls_url = s['url']
+                    break
+        if hls_url:
+            log.info("Attempting HLS download: %s", hls_url[:80])
+            downloaded = await _download_n_m3u8dl(hls_url, filename)
+            if not downloaded:
+                downloaded = await _download_hls_ffmpeg(hls_url, filename)
 
     # ── Failed ──────────────────────────────────────────────────────
     if not downloaded:
@@ -391,17 +392,17 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
         # Get video details for caption and catalog
         info = None
         try:
-            info = await details(slug)
+            info = hanime_api.details(slug)
             series_name = _extract_series_name(slug)
             tags_str = ", ".join(info.get("tags", [])[:5])
             caption = (
                 f"📺 **{info['name']}**\n"
                 f"🏷 {tags_str}\n"
-                f"Downloaded via @hentaiff_dl_bot"
+                f"Downloaded via @hanime_dl_bot"
             )
         except Exception:
             series_name = _extract_series_name(slug)
-            caption = f"📺 **{slug}**\nDownloaded via @hentaiff_dl_bot"
+            caption = f"📺 **{slug}**\nDownloaded via @hanime_dl_bot"
         # Send to user
         sent = await client.send_document(
             chat_id=chat_id,
@@ -473,7 +474,7 @@ async def batch_download(client: Client, callback_query: CallbackQuery):
 
     # Get episode list
     try:
-        info = await details(slug)
+        info = hanime_api.details(slug)
     except Exception:
         log.exception("Failed to get details for batch %s", slug)
         await callback_query.answer("❌ API error", show_alert=True)
@@ -516,7 +517,7 @@ async def batch_download(client: Client, callback_query: CallbackQuery):
                 await client.send_document(
                     chat_id=chat_id,
                     document=cached["file_id"],
-                    caption=f"📺 **{ep_name}**\nDownloaded via @hentaiff_dl_bot",
+                    caption=f"📺 **{ep_name}**\nDownloaded via @hanime_dl_bot",
                 )
                 succeeded += 1
                 continue
@@ -525,7 +526,7 @@ async def batch_download(client: Client, callback_query: CallbackQuery):
 
         # Fresh download
         try:
-            data = await get_streams(ep_slug)
+            data = hanime_api.get_streams(ep_slug)
         except Exception:
             log.error("Batch: stream fetch failed for %s", ep_slug)
             failed += 1
@@ -559,11 +560,11 @@ async def batch_download(client: Client, callback_query: CallbackQuery):
             continue
 
         try:
-            ep_info = await details(ep_slug)
+            ep_info = hanime_api.details(ep_slug)
             tags_str = ", ".join(ep_info.get("tags", [])[:5])
-            caption = f"📺 **{ep_name}**\n🏷 {tags_str}\nDownloaded via @hentaiff_dl_bot"
+            caption = f"📺 **{ep_name}**\n🏷 {tags_str}\nDownloaded via @hanime_dl_bot"
         except Exception:
-            caption = f"📺 **{ep_name}**\nDownloaded via @hentaiff_dl_bot"
+            caption = f"📺 **{ep_name}**\nDownloaded via @hanime_dl_bot"
 
         try:
             sent = await client.send_document(

@@ -7,9 +7,9 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
 )
 
-from api.hentaiff import HentaiFFScraper
+from api.hanime_api import HanimeAPI
 
-hentaiff_scraper = HentaiFFScraper()
+hanime_api = HanimeAPI()
 from utils.auth import approved_only
 from utils.fsub import force_sub
 from utils.logger import log_search
@@ -30,7 +30,7 @@ async def hentaisearch(client: Client, message: Message):
     await log_search(client, message.from_user.username, query)
 
     try:
-        results = hentaiff_scraper.search(query)
+        results = hanime_api.search(query)
     except Exception:
         log.exception("Search failed for query=%s", query)
         msg = await message.reply_text("❌ Search API is currently unavailable. Please try again later.")
