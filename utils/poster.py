@@ -54,12 +54,19 @@ async def download_poster(url: str) -> str | None:
 
                 tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
                 try:
+                    total_size = 0
                     async for chunk in resp.content.iter_chunked(64 * 1024):
                         tmp.write(chunk)
+                        total_size += len(chunk)
                     tmp.close()
+                    
+                    log.info("Poster downloaded to %s, raw size=%d bytes", tmp.name, total_size)
 
                     # Verify file has content
-                    if os.path.getsize(tmp.name) < 1000:
+                    file_size = os.path.getsize(tmp.name)
+                    log.info("Poster file size on disk: %d bytes", file_size)
+                    if file_size < 1000:
+                        log.warning("Poster file too small (%d bytes), deleting", file_size)
                         os.unlink(tmp.name)
                         return None
 
@@ -87,6 +94,6 @@ async def download_poster(url: str) -> str | None:
                     os.unlink(tmp.name)
                     raise
 
-    except Exception:
-        log.warning("Failed to download poster from %s", url)
+    except Exception as e:
+        log.error("Failed to download poster from %s: %s", url, e, exc_info=True)
         return None
