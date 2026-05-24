@@ -157,7 +157,11 @@ async def update_catalog(
         # ── Create new catalog message ──────────────────────────────
         poster_path = None
         try:
+            # Try to download poster with fallback
             poster_path = await download_poster(poster_url)
+            
+            if not poster_path and poster_url:
+                log.warning("Failed to download poster for %s, trying without poster", series_slug)
 
             if poster_path:
                 msg = await client.send_photo(
@@ -166,13 +170,16 @@ async def update_catalog(
                     caption=caption,
                     reply_markup=keyboard,
                 )
+                log.info("Sent catalog message with poster for %s", series_slug)
             else:
-                # No poster available — send text-only message
+                # No poster available — send text-only message with emoji
+                text_with_emoji = f"🖼 {caption}"
                 msg = await client.send_message(
                     chat_id=main_channel,
-                    text=caption,
+                    text=text_with_emoji,
                     reply_markup=keyboard,
                 )
+                log.info("Sent catalog message without poster for %s", series_slug)
 
             channel_message_id = msg.id
             log.info("Created catalog message %d for series=%s", channel_message_id, series_slug)

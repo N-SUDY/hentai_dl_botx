@@ -659,15 +659,22 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
             upsert=True,
         )
 
-        # Update series catalog
+        # Update series catalog with poster
         try:
+            # Get poster URL with fallback to cover_url
+            poster_url = ""
+            if info:
+                poster_url = info.get("poster_url", "") or info.get("cover_url", "") or info.get("cover", "")
+            
+            log.info("Updating catalog for %s with poster_url=%s", slug, poster_url[:60] if poster_url else "None")
+            
             await update_catalog(
                 client=client,
                 slug=slug,
                 file_id=file_id,
                 file_size=sent.document.file_size,
                 series_name=info.get("name", "") if info else "",
-                poster_url=info.get("poster_url", "") if info else "",
+                poster_url=poster_url,
                 tags=info.get("tags", []) if info else [],
             )
         except Exception:
@@ -827,6 +834,31 @@ async def batch_download(client: Client, callback_query: CallbackQuery):
                 {"$set": {"name": ep_slug, "file_id": file_id, "file_size": sent.document.file_size}},
                 upsert=True,
             )
+            
+            # Update catalog for batch downloads too
+            try:
+                ep_info = None
+                try:
+                    ep_info = hanime_api.details(ep_slug)
+                except Exception:
+                    pass
+                
+                poster_url = ""
+                if ep_info:
+                    poster_url = ep_info.get("poster_url", "") or ep_info.get("cover_url", "") or ep_info.get("cover", "")
+                
+                await update_catalog(
+                    client=client,
+                    slug=ep_slug,
+                    file_id=file_id,
+                    file_size=sent.document.file_size,
+                    series_name=ep_info.get("name", "") if ep_info else ep_name,
+                    poster_url=poster_url,
+                    tags=ep_info.get("tags", []) if ep_info else [],
+                )
+            except Exception:
+                log.exception("Batch: failed to update catalog for %s", ep_slug)
+            
             succeeded += 1
         except Exception:
             log.exception("Batch: upload failed for %s", ep_slug)
