@@ -110,8 +110,12 @@ async def start_command(client: Client, message: Message):
     db = get_db()
     chat_id = message.chat.id
 
-    # Clear old messages first
-    await clear_chat_history(client, chat_id, preserve_message_ids=[message.id])
+    # Clear old messages first, then delete the /start command itself
+    await clear_chat_history(client, chat_id)
+    try:
+        await message.delete()
+    except Exception:
+        pass  # Fine — bot can't always delete user messages, just try
 
     # Force-sub check FIRST
     passed, channel_id = await check_force_sub(client, user.id)

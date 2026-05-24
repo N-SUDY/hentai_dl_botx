@@ -27,8 +27,12 @@ async def hentaisearch(client: Client, message: Message):
     if not query:
         return
 
-    # Clear old messages before new search
-    await clear_chat_history(client, message.chat.id, preserve_message_ids=[message.id])
+    # Clear old messages before new search, then delete the user's query message
+    await clear_chat_history(client, message.chat.id)
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
     await log_search(client, message.from_user.username, query)
 
