@@ -244,71 +244,199 @@ async def resolve_channel_message(ub: Client, channel: str, message_id: int) -> 
         return None
 
 
+async def _join_channel_safe(ub: Client, channel: str) -> bool:
+    """Join a channel silently. Returns True if joined/already member."""
+    try:
+        await ub.join_chat(channel)
+        log.info("Joined channel: %s", channel)
+        return True
+    except Exception as e:
+        err = str(e).lower()
+        if "already" in err or "participant" in err:
+            return True  # Already a member
+        log.warning("Failed to join %s: %s", channel, e)
+        return False
+
+
+async def _handle_force_sub(ub: Client, msg, bot_username: str) -> bool:
+    """
+    Detect force-sub requirements in a bot message and handle them.
+    Joins all required channels, then clicks the verify/check button.
+    Returns True if force-sub was handled (caller should wait for next message).
+    """
+    text = (msg.text or "") + " " + (msg.caption or "")
+    lower = text.lower()
+
+    # Detect force-sub patterns
+    force_sub_keywords = [
+        "join", "subscribe", "channel", "must join", "please join",
+        "join the", "join all", "not joined", "you must",
+        "membership", "verify", "check again",
+    ]
+    is_force_sub = any(kw in lower for kw in force_sub_keywords)
+
+    if not is_force_sub:
+        return False
+
+    log.info("Force-sub detected from @%s — joining required channels", bot_username)
+
+    # Collect all channel links from text + buttons
+    channels_to_join = set()
+
+    # Extract channel links from text
+    for url in extract_urls(text):
+        tg = classify_telegram_link(url)
+        if tg:
+            if tg["type"] == "channel_message":
+                channels_to_join.add(tg["channel"])
+            elif tg["type"] in ("bot", "bot_start"):
+                # Skip bot links — those are the bot itself or other bots
+                pass
+            else:
+                channels_to_join.add(tg.get("bot", ""))
+
+    # Extract channel links from inline buttons
+    verify_button = None
+    if msg.reply_markup:
+        for row in msg.reply_markup.inline_keyboard:
+            for btn in row:
+                if btn.url:
+                    tg = classify_telegram_link(btn.url)
+                    if tg and tg["type"] in ("channel_message", "bot"):
+                        ch = tg.get("channel", tg.get("bot", ""))
+                        if ch and ch.lower() != bot_username.lower():
+                            channels_to_join.add(ch)
+                elif btn.callback_data:
+                    # The verify/check button (no URL, just callback_data)
+                    btn_text = (btn.text or "").lower()
+                    if any(w in btn_text for w in [
+                        "verify", "check", "joined", "✅", "done",
+                        "confirm", "try again", "refresh",
+                    ]):
+                        verify_button = btn
+
+    # Remove empty strings
+    channels_to_join.discard("")
+
+    if not channels_to_join:
+        log.info("Force-sub detected but no channels found to join")
+        return False
+
+    log.info("Joining %d channels for force-sub: %s", len(channels_to_join), channels_to_join)
+
+    # Join all channels
+    joined = 0
+    for ch in channels_to_join:
+        if await _join_channel_safe(ub, ch):
+            joined += 1
+        await asyncio.sleep(0.5)  # Rate limit
+
+    log.info("Joined %d/%d channels for @%s", joined, len(channels_to_join), bot_username)
+
+    # Click the verify button
+    if verify_button:
+        try:
+            await msg.click(verify_button.callback_data)
+            log.info("Clicked verify button on @%s", bot_username)
+        except Exception as e:
+            log.warning("Failed to click verify button: %s", e)
+            # Fallback: resend the /start command
+            pass
+
+    # Small delay for bot to process verification
+    await asyncio.sleep(2)
+
+    return True
+
+
 async def resolve_bot_start(ub: Client, bot_username: str, start_param: str) -> dict | None:
     """
     Start a bot with a deep link parameter and wait for it to send a video file.
+    Handles force-sub bots: auto-joins required channels, clicks verify, then
+    waits for the actual file.
     Returns {file_id, file_name, file_size} or None.
     """
     log.info("Starting bot @%s with param=%s", bot_username, start_param)
+
+    max_attempts = 3  # Retry /start after force-sub handling
+
     try:
-        # Send /start command with parameter
-        await ub.send_message(bot_username, f"/start {start_param}")
+        for attempt in range(max_attempts):
+            # Send /start command
+            cmd = f"/start {start_param}" if start_param else "/start"
+            await ub.send_message(bot_username, cmd)
 
-        # Wait for bot to reply with a video
-        start = time.time()
-        last_msg_id = 0
+            start_t = time.time()
+            last_msg_id = 0
+            force_sub_handled = False
 
-        while time.time() - start < BOT_REPLY_TIMEOUT:
-            await asyncio.sleep(2)
+            while time.time() - start_t < BOT_REPLY_TIMEOUT:
+                await asyncio.sleep(2)
 
-            async for msg in ub.get_chat_history(bot_username, limit=5):
-                if msg.id <= last_msg_id:
-                    continue
-                last_msg_id = max(last_msg_id, msg.id)
+                async for msg in ub.get_chat_history(bot_username, limit=5):
+                    if msg.id <= last_msg_id:
+                        continue
+                    last_msg_id = max(last_msg_id, msg.id)
 
-                if msg.outgoing:
-                    continue
+                    if msg.outgoing:
+                        continue
 
-                # Check for video
-                if msg.video:
-                    return {
-                        "file_id": msg.video.file_id,
-                        "file_name": msg.video.file_name or f"video_{msg.id}.mp4",
-                        "file_size": msg.video.file_size or 0,
-                        "source": f"@{bot_username}",
-                    }
-
-                if msg.document:
-                    mime = msg.document.mime_type or ""
-                    fname = msg.document.file_name or ""
-                    if "video" in mime or any(fname.lower().endswith(e) for e in ['.mp4', '.mkv', '.avi']):
+                    # Check for video file
+                    if msg.video:
                         return {
-                            "file_id": msg.document.file_id,
-                            "file_name": msg.document.file_name or f"doc_{msg.id}",
-                            "file_size": msg.document.file_size or 0,
+                            "file_id": msg.video.file_id,
+                            "file_name": msg.video.file_name or f"video_{msg.id}.mp4",
+                            "file_size": msg.video.file_size or 0,
                             "source": f"@{bot_username}",
                         }
 
-                # Check if bot sent a link instead (another redirect)
-                text = (msg.text or "") + " " + (msg.caption or "")
-                urls = extract_urls(text)
-                for url in urls:
-                    tg = classify_telegram_link(url)
-                    if tg and tg["type"] == "channel_message":
-                        return await resolve_channel_message(ub, tg["channel"], tg["message_id"])
+                    if msg.document:
+                        mime = msg.document.mime_type or ""
+                        fname = msg.document.file_name or ""
+                        if "video" in mime or any(fname.lower().endswith(e) for e in ['.mp4', '.mkv', '.avi']):
+                            return {
+                                "file_id": msg.document.file_id,
+                                "file_name": msg.document.file_name or f"doc_{msg.id}",
+                                "file_size": msg.document.file_size or 0,
+                                "source": f"@{bot_username}",
+                            }
 
-                # Check inline buttons
-                if msg.reply_markup:
-                    for row in msg.reply_markup.inline_keyboard:
-                        for btn in row:
-                            if btn.url:
-                                tg = classify_telegram_link(btn.url)
-                                if tg and tg["type"] == "channel_message":
-                                    return await resolve_channel_message(
-                                        ub, tg["channel"], tg["message_id"]
-                                    )
+                    # Check if bot sent a redirect link
+                    text = (msg.text or "") + " " + (msg.caption or "")
+                    urls = extract_urls(text)
+                    for url in urls:
+                        tg = classify_telegram_link(url)
+                        if tg and tg["type"] == "channel_message":
+                            return await resolve_channel_message(ub, tg["channel"], tg["message_id"])
 
-        log.info("Bot @%s didn't send a video within %ds", bot_username, BOT_REPLY_TIMEOUT)
+                    # Check inline buttons for redirect links
+                    if msg.reply_markup:
+                        for row in msg.reply_markup.inline_keyboard:
+                            for btn in row:
+                                if btn.url:
+                                    tg = classify_telegram_link(btn.url)
+                                    if tg and tg["type"] == "channel_message":
+                                        return await resolve_channel_message(
+                                            ub, tg["channel"], tg["message_id"]
+                                        )
+
+                    # Handle force-sub (join channels + verify)
+                    if not force_sub_handled:
+                        handled = await _handle_force_sub(ub, msg, bot_username)
+                        if handled:
+                            force_sub_handled = True
+                            log.info("Force-sub handled for @%s, attempt %d — retrying /start",
+                                     bot_username, attempt + 1)
+                            break  # Break inner while, retry /start
+
+            if force_sub_handled:
+                # Retry /start after joining channels
+                continue
+
+            # No force-sub, no video — give up
+            break
+
+        log.info("Bot @%s didn't send a video after %d attempts", bot_username, max_attempts)
         return None
 
     except Exception as e:
