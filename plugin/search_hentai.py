@@ -13,7 +13,7 @@ hanime_api = HanimeAPI()
 from utils.auth import approved_only
 from utils.fsub import force_sub
 from utils.logger import log_search
-from utils.autodelete import track_message, clear_chat_history, delete_user_message
+from utils.autodelete import track_message, clear_chat_history
 
 log = logging.getLogger(__name__)
 
@@ -27,9 +27,11 @@ async def hentaisearch(client: Client, message: Message):
     if not query:
         return
 
-    # Clear old messages + wipe chat history (userbot handles user messages)
+    # Clear old bot messages from this chat
     await clear_chat_history(client, message.chat.id)
-    await delete_user_message(message.chat.id, message.id)
+    
+    # Track user's search message for auto-delete (10 min)
+    await track_message(message.chat.id, message.id)
 
     await log_search(client, message.from_user.username, query)
 
@@ -58,5 +60,3 @@ async def hentaisearch(client: Client, message: Message):
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
     await track_message(message.chat.id, msg.id)
-    # Also track user's search message
-    await track_message(message.chat.id, message.id)

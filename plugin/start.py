@@ -20,7 +20,7 @@ from pyrogram.types import (
 
 from utils.db import get_db
 from utils.fsub import check_force_sub, send_force_sub_message
-from utils.autodelete import track_message, clear_chat_history, delete_user_message
+from utils.autodelete import track_message, clear_chat_history
 
 log = logging.getLogger(__name__)
 
@@ -70,8 +70,8 @@ def _get_random_welcome_image() -> str | None:
     return str(random.choice(images))
 
 
-async def _send_welcome(client: Client, chat_id: int, text: str):
-    """Send welcome message with a random image. Tracked for auto-delete."""
+async def _send_welcome(client: Client, chat_id: int, text: str) -> Message | None:
+    """Send welcome message with a random image. Returns the sent message."""
     img = _get_random_welcome_image()
     msg = None
     if img:
@@ -87,8 +87,7 @@ async def _send_welcome(client: Client, chat_id: int, text: str):
     if not msg:
         msg = await client.send_message(chat_id=chat_id, text=text)
 
-    if msg:
-        await track_message(chat_id, msg.id)
+    return msg
 
 
 async def checksub_callback(client, callback_query):
@@ -114,10 +113,8 @@ async def start_command(client: Client, message: Message):
     # Clear old bot messages from this chat
     await clear_chat_history(client, chat_id)
     
-    # Try to delete the user's /start command message
-    # Note: This only works if userbot is in the same chat.
-    # In private bot chats, Telegram API prevents deleting user messages.
-    await delete_user_message(chat_id, user_message_id)
+    # Track user's /start message for auto-delete (10 min)
+    await track_message(chat_id, user_message_id)
 
     # Force-sub check FIRST
     passed, channel_id = await check_force_sub(client, user.id)
@@ -147,8 +144,12 @@ async def start_command(client: Client, message: Message):
         )
 
         log.info("Owner set up: user_id=%s username=%s", user.id, user.username)
-        await _send_welcome(client, message.chat.id, OWNER_SETUP_TEXT)
+        welcome_msg = await _send_welcome(client, message.chat.id, OWNER_SETUP_TEXT)
+        if welcome_msg:
+            await track_message(chat_id, welcome_msg.id)
         return
 
     # Regular /start
-    await _send_welcome(client, message.chat.id, WELCOME_TEXT)
+    welcome_msg = await _send_welcome(client, message.chat.id, WELCOME_TEXT)
+    if welcome_msg:
+        await track_message(chat_id, welcome_msg.id)
