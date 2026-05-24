@@ -66,8 +66,12 @@ async def download_poster(url: str) -> str | None:
                     log.warning("Poster data too small (%d bytes)", len(data))
                     return None
                 
+                # Ensure directory exists
+                os.makedirs(POSTER_TEMP_DIR, exist_ok=True)
+                
                 # Write to our dedicated temp directory
-                tmp_path = os.path.join(POSTER_TEMP_DIR, f"poster_{os.urandom(8).hex()}{ext}")
+                import time
+                tmp_path = os.path.join(POSTER_TEMP_DIR, f"poster_{int(time.time()*1000)}_{os.urandom(4).hex()}{ext}")
                 with open(tmp_path, "wb") as f:
                     f.write(data)
                 log.info("Poster saved to %s (%d bytes)", tmp_path, len(data))
