@@ -554,7 +554,7 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
                     f"✅ **Already Downloaded!**\n\n"
                     f"📄 {slug}\n"
                     f"💾 File sent from cache.\n\n"
-                    f"Auto-deletes in 10 minutes. Save it!"
+                    f"Auto-deletes in 5 minutes. Save it!"
                 )
                 return
             except Exception:
@@ -714,7 +714,7 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
             f"✅ **Download Complete!**\n\n"
             f"📦 Size: {file_size_mb:.1f} MB\n"
             f"⏱ Total Time: {total_time}s\n\n"
-            f"💾 Auto-deletes in 10 minutes. Save it!"
+            f"💾 Auto-deletes in 5 minutes. Save it!"
         )
 
         # Save to MongoDB cache
