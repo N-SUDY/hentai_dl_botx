@@ -1,7 +1,11 @@
 FROM python:3.11-slim
 
-# Install ffmpeg
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+# Install ffmpeg + Node.js (needed for hanime.tv WASM signature generation)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    nodejs \
+    npm \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . .
