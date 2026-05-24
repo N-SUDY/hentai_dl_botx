@@ -44,52 +44,47 @@ async def hentailink(client: Client, callback_query: CallbackQuery):
     log.info("=== LINK HANDLER CALLED === data=%s", callback_query.data)
     slug = callback_query.data.split("_", 1)[1]
 
-    try:
-        data = hanime_api.get_streams(slug)
-    except Exception:
-        log.exception("Failed to fetch streams for slug=%s", slug)
-        await callback_query.answer("API unavailable, try again later.", show_alert=True)
-        return
-
-    sources = data.get("sources", [])
-    streams = data.get("streams", [])
-
-    if not sources and not streams:
-        await callback_query.answer("No stream links available.", show_alert=True)
-        return
-
-    keyboard = []
-    keyboard.append([InlineKeyboardButton("Watch on Hanime.tv", url=f"{BASE_URL}/videos/hentai/{slug}")])
-
-    for source in sources:
-        label = source.get("label", "Stream")
-        url = source.get("url", "")
-        s_type = source.get("type", "")
-
-        if s_type == "hls":
-            label = f"HLS Stream ({label})"
-        elif s_type == "direct_download":
-            label = f"Download ({label})"
-        else:
-            label = f"Stream ({label})"
-        
-        if url:
-            keyboard.append([InlineKeyboardButton(label, url=url)])
-
-    keyboard.append([InlineKeyboardButton("Back", callback_data=f"info_{slug}")])
+    keyboard = [
+        [InlineKeyboardButton("⬅️ Back", callback_data=f"info_{slug}")]
+    ]
 
     await callback_query.edit_message_text(
-        f"Streaming **{slug}**\n"
-        f"{BASE_URL}/videos/hentai/{slug}\n\n"
+        f"📺 **Streaming Info**\n\n"
+        f"Use the **Download** button to get the video file.\n\n"
         "Please share the bot if you like it",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
-def _progress_bar(pct: float, length: int = 14) -> str:
+def _progress_bar(pct: float, length: int = 12) -> str:
     filled = int(length * pct / 100)
-    bar = "█" * filled + "░" * (length - filled)
+    empty = length - filled
+    bar = "█" * filled + "▒" * empty
     return f"[{bar}] {pct:.1f}%"
+
+
+def _progress_bar_detailed(pct: float, length: int = 14) -> str:
+    filled = int(length * pct / 100)
+    empty = length - filled
+    bar = "█" * filled + "░" * empty
+    return f"[{bar}] {pct:.1f}%"
+
+
+def _get_progress_emoji(pct: float) -> str:
+    if pct < 10:
+        return "🆕"
+    elif pct < 25:
+        return "🚀"
+    elif pct < 50:
+        return "⏳"
+    elif pct < 75:
+        return "🔥"
+    elif pct < 90:
+        return "⚡"
+    elif pct < 100:
+        return "🏁"
+    else:
+        return "✅"
 
 
 def _format_size(size_bytes: int) -> str:
@@ -179,23 +174,29 @@ class DownloadProgressTracker:
         return False
     
     def format_message(self, stats: dict, title: str = "Downloading...", slug: str = "") -> str:
-        bar = _progress_bar(stats["pct"])
+        pct = stats["pct"]
+        emoji = _get_progress_emoji(pct)
+        bar = _progress_bar_detailed(pct)
         speed = _format_speed(stats["speed"])
         eta = _format_time(stats["eta"]) if stats["eta"] > 0 else "calculating..."
         elapsed = _format_time(stats["elapsed"])
         downloaded = _format_size(stats["downloaded"])
         total = _format_size(stats["total"]) if stats["total"] > 0 else "unknown"
         
+        # Build status line with emoji
+        status_line = f"{emoji} {title}"
+        
+        # Build progress details
         msg = (
-            f"{title}\n\n"
+            f"{status_line}\n\n"
             f"{bar}\n\n"
-            f"Size: {downloaded} / {total}\n"
-            f"Speed: {speed}\n"
-            f"Elapsed: {elapsed}\n"
-            f"ETA: {eta}"
+            f"📦 Size: {downloaded} / {total}\n"
+            f"⚡ Speed: {speed}\n"
+            f"⏱ Elapsed: {elapsed}\n"
+            f"⏳ ETA: {eta}"
         )
         if slug:
-            msg += f"\nFile: {slug}.mp4"
+            msg += f"\n📄 File: {slug}.mp4"
         return msg
 
 
@@ -254,23 +255,28 @@ class UploadProgressTracker:
         return False
     
     def format_message(self, stats: dict, slug: str = "") -> str:
-        bar = _progress_bar(stats["pct"])
+        pct = stats["pct"]
+        emoji = _get_progress_emoji(pct)
+        bar = _progress_bar_detailed(pct)
         speed = _format_speed(stats["speed"])
         eta = _format_time(stats["eta"]) if stats["eta"] > 0 else "calculating..."
         elapsed = _format_time(stats["elapsed"])
         uploaded = _format_size(stats["uploaded"])
         total = _format_size(stats["total"]) if stats["total"] > 0 else "unknown"
         
+        # Build status line with emoji
+        status_line = f"{emoji} Uploading..."
+        
         msg = (
-            f"Uploading...\n\n"
+            f"{status_line}\n\n"
             f"{bar}\n\n"
-            f"Size: {uploaded} / {total}\n"
-            f"Speed: {speed}\n"
-            f"Elapsed: {elapsed}\n"
-            f"ETA: {eta}"
+            f"📦 Size: {uploaded} / {total}\n"
+            f"⚡ Speed: {speed}\n"
+            f"⏱ Elapsed: {elapsed}\n"
+            f"⏳ ETA: {eta}"
         )
         if slug:
-            msg += f"\nFile: {slug}.mp4"
+            msg += f"\n📄 File: {slug}.mp4"
         return msg
 
 
@@ -508,7 +514,7 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
 
     start_time = time.time()
 
-    await _safe_edit(callback_query, f"Preparing download...\n\n{_progress_bar(0)}")
+    await _safe_edit(callback_query, f"🚀 **Preparing Download**\n\n{_progress_bar(0)}\n\n⏳ Please wait...")
 
     log_msg_id = await log_download_start(client, username, slug)
 
@@ -532,8 +538,8 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
         elapsed = int(time.time() - start_time)
         await _safe_edit(
             callback_query,
-            "No download sources available for this video.\n\n"
-            "This title may be region-locked or not yet available for download on the server.\n"
+            "❌ **No Download Sources Available**\n\n"
+            "This title may be region-locked or not yet available for download.\n"
             "Try another episode or title."
         )
         await log_error(client, username, f"No sources/dl_url for {slug}")
@@ -639,8 +645,10 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
 
         await _safe_edit(
             callback_query,
-            f"Done! ({file_size_mb:.1f} MB in {total_time}s)\n"
-            f"Auto-deletes in 4 hours. Save it!"
+            f"✅ **Download Complete!**\n\n"
+            f"📦 Size: {file_size_mb:.1f} MB\n"
+            f"⏱ Total Time: {total_time}s\n\n"
+            f"💾 Auto-deletes in 4 hours. Save it!"
         )
 
         # Save to MongoDB cache
@@ -711,7 +719,7 @@ async def batch_download(client: Client, callback_query: CallbackQuery):
 
     status_msg = await client.send_message(
         chat_id=chat_id,
-        text=f"Batch Download Started\n\nEpisodes: {total}\nProgress: 0/{total}",
+        text=f"📥 **Batch Download Started**\n\n📺 Episodes: {total}\n✅ Progress: 0/{total}\n\n⏳ Starting...",
     )
 
     db = get_db()
@@ -723,10 +731,14 @@ async def batch_download(client: Client, callback_query: CallbackQuery):
             continue
 
         try:
+            progress_pct = ((i + 1) / total * 100) if total > 0 else 0
+            bar = _progress_bar(progress_pct)
             await status_msg.edit_text(
-                f"Batch Download\n\n"
-                f"Downloading: {ep_name} ({i + 1}/{total})\n"
-                f"Done: {succeeded} | Failed: {failed}"
+                f"📥 **Batch Download**\n\n"
+                f"{bar}\n\n"
+                f"📺 Downloading: {ep_name}\n"
+                f"📊 Progress: {i + 1}/{total}\n"
+                f"✅ Done: {succeeded} | ❌ Failed: {failed}"
             )
         except Exception:
             pass
@@ -808,11 +820,14 @@ async def batch_download(client: Client, callback_query: CallbackQuery):
                 os.remove(filename)
 
     try:
+        success_pct = (succeeded / total * 100) if total > 0 else 0
+        bar = _progress_bar(success_pct)
         await status_msg.edit_text(
-            f"Batch Download Complete!\n\n"
-            f"Total: {total}\n"
-            f"Success: {succeeded}\n"
-            f"Failed: {failed}"
+            f"✅ **Batch Download Complete!**\n\n"
+            f"{bar}\n\n"
+            f"📊 Total: {total}\n"
+            f"✅ Success: {succeeded}\n"
+            f"❌ Failed: {failed}"
         )
     except Exception:
         pass

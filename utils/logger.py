@@ -74,12 +74,20 @@ async def log_download_start(client: Client, username: str, slug: str) -> int | 
     return await log_to_channel(client, f"⬇️ User {username_str} downloading: {slug}")
 
 
-async def log_download_progress(client: Client, message_id: int, username: str, slug: str, progress: int):
+def _progress_bar(pct: float, length: int = 10) -> str:
+    filled = int(length * pct / 100)
+    empty = length - filled
+    bar = "█" * filled + "░" * empty
+    return f"[{bar}] {pct:.1f}%"
+
+
+async def log_download_progress(client: Client, message_id: int, username: str, slug: str, progress: float):
     """Update download progress on the log message."""
     username_str = f"@{username}" if username else "unknown"
+    bar = _progress_bar(progress)
     await edit_log_message(
         client, message_id,
-        f"⬇️ User {username_str} downloading: {slug}\n📊 Progress: {progress}%"
+        f"⬇️ User {username_str} downloading: {slug}\n{bar}"
     )
 
 
