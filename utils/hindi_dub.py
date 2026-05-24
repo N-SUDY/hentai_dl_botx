@@ -23,6 +23,10 @@ from pyrogram import Client
 from pyrogram.enums import MessagesFilter
 
 from utils.db import get_hindi_db
+from utils.link_resolver import (
+    needs_link_resolution, get_message_links, resolve_link,
+    is_shortened_url, is_telegram_link,
+)
 
 log = logging.getLogger(__name__)
 
@@ -239,7 +243,7 @@ async def search_hindi_dub(
                     f"🔍 Searching channels... ({i}/{len(channels)})"
                 )
 
-            result = await _search_channel(ub, ch_id, ch_title, slug, queries)
+            result = await _search_channel(ub, ch_id, ch_title, slug, queries, progress_cb)
             if result:
                 log.info("Hindi dub found in channel %s for %s", ch_title, slug)
                 if progress_cb:
@@ -264,63 +268,71 @@ async def _search_channel(
     channel_title: str,
     slug: str,
     queries: list[str],
+    progress_cb=None,
 ) -> dict | None:
-    """Search a specific channel for matching Hindi dub content."""
-    for query in queries[:5]:  # Limit queries per channel
-        try:
-            async for msg in ub.search_messages(
-                chat_id=channel_id,
-                query=query,
-                limit=20,
-                filter=MessagesFilter.VIDEO,
-            ):
-                if _is_video_message(msg):
-                    file_id, file_name, file_size = _extract_file_info(msg)
-                    if file_id:
-                        await _save_to_cache(
-                            slug, file_id, file_name,
-                            channel_id, channel_title,
-                            msg.id, file_size,
-                        )
-                        return {
-                            "file_id": file_id,
-                            "file_name": file_name,
-                            "file_size": file_size,
-                            "channel_id": channel_id,
-                            "channel_title": channel_title,
-                            "message_id": msg.id,
-                        }
-        except Exception as e:
-            log.debug("Search failed in %s for '%s': %s", channel_title, query, e)
-            continue
+    """
+    Search a specific channel for matching Hindi dub content.
+    Handles both direct video files AND shortened links.
+    """
+    for query in queries[:5]:
+        # Search with VIDEO filter first, then DOCUMENT, then no filter (text posts with links)
+        for msg_filter in [MessagesFilter.VIDEO, MessagesFilter.DOCUMENT, MessagesFilter.EMPTY]:
+            try:
+                async for msg in ub.search_messages(
+                    chat_id=channel_id,
+                    query=query,
+                    limit=20,
+                    filter=msg_filter,
+                ):
+                    # Case 1: Direct video file
+                    if _is_video_message(msg):
+                        file_id, file_name, file_size = _extract_file_info(msg)
+                        if file_id:
+                            await _save_to_cache(
+                                slug, file_id, file_name,
+                                channel_id, channel_title,
+                                msg.id, file_size,
+                            )
+                            return {
+                                "file_id": file_id,
+                                "file_name": file_name,
+                                "file_size": file_size,
+                                "channel_id": channel_id,
+                                "channel_title": channel_title,
+                                "message_id": msg.id,
+                            }
 
-        # Also try document filter (some channels send as documents)
-        try:
-            async for msg in ub.search_messages(
-                chat_id=channel_id,
-                query=query,
-                limit=20,
-                filter=MessagesFilter.DOCUMENT,
-            ):
-                if _is_video_message(msg):
-                    file_id, file_name, file_size = _extract_file_info(msg)
-                    if file_id:
-                        await _save_to_cache(
-                            slug, file_id, file_name,
-                            channel_id, channel_title,
-                            msg.id, file_size,
-                        )
-                        return {
-                            "file_id": file_id,
-                            "file_name": file_name,
-                            "file_size": file_size,
-                            "channel_id": channel_id,
-                            "channel_title": channel_title,
-                            "message_id": msg.id,
-                        }
-        except Exception as e:
-            log.debug("Document search failed in %s: %s", channel_title, e)
-            continue
+                    # Case 2: Message has shortened links — resolve them
+                    if needs_link_resolution(msg):
+                        links = get_message_links(msg)
+                        for link in links:
+                            if is_shortened_url(link) or is_telegram_link(link):
+                                log.info("Found shortened link in %s: %s",
+                                         channel_title, link[:80])
+                                if progress_cb:
+                                    await progress_cb(
+                                        f"🔗 Found link in **{channel_title}**\n"
+                                        f"🔓 Resolving..."
+                                    )
+                                resolved = await resolve_link(ub, link, progress_cb)
+                                if resolved and resolved.get("file_id"):
+                                    await _save_to_cache(
+                                        slug,
+                                        resolved["file_id"],
+                                        resolved.get("file_name", ""),
+                                        channel_id, channel_title,
+                                        msg.id,
+                                        resolved.get("file_size", 0),
+                                    )
+                                    resolved["channel_id"] = channel_id
+                                    resolved["channel_title"] = channel_title
+                                    resolved["message_id"] = msg.id
+                                    return resolved
+
+            except Exception as e:
+                log.debug("Search failed in %s for '%s' (filter=%s): %s",
+                          channel_title, query, msg_filter, e)
+                continue
 
     return None
 
@@ -363,46 +375,66 @@ async def _broad_search(
                     break
 
                 count += 1
-                if not _is_video_message(msg):
-                    continue
-
-                # Track which channels we found content in
                 ch_id = msg.chat.id if msg.chat else None
                 ch_title = msg.chat.title if msg.chat else "Unknown"
 
                 if ch_id and ch_id not in checked_channels:
                     checked_channels.add(ch_id)
 
-                file_id, file_name, file_size = _extract_file_info(msg)
-                if not file_id:
-                    continue
-
-                # Basic relevance check
+                # Basic relevance check on caption/text
                 caption_text = (msg.caption or "").lower() + " " + (msg.text or "").lower()
                 slug_words = slug.replace("-", " ").lower().split()
-                # At least half the slug words should appear in caption
                 matches = sum(1 for w in slug_words if w in caption_text)
                 if matches < len(slug_words) * 0.4:
                     continue
 
-                log.info("Hindi dub found via global search: %s in %s", file_name, ch_title)
-                await _save_to_cache(
-                    slug, file_id, file_name,
-                    ch_id or 0, ch_title,
-                    msg.id, file_size,
-                )
+                # Case 1: Direct video file
+                if _is_video_message(msg):
+                    file_id, file_name, file_size = _extract_file_info(msg)
+                    if file_id:
+                        log.info("Hindi dub found via global search: %s in %s", file_name, ch_title)
+                        await _save_to_cache(
+                            slug, file_id, file_name,
+                            ch_id or 0, ch_title,
+                            msg.id, file_size,
+                        )
+                        if progress_cb:
+                            await progress_cb(f"✅ Found in **{ch_title}**!")
+                        return {
+                            "file_id": file_id,
+                            "file_name": file_name,
+                            "file_size": file_size,
+                            "channel_id": ch_id,
+                            "channel_title": ch_title,
+                            "message_id": msg.id,
+                        }
 
-                if progress_cb:
-                    await progress_cb(f"✅ Found in **{ch_title}**!")
-
-                return {
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "file_size": file_size,
-                    "channel_id": ch_id,
-                    "channel_title": ch_title,
-                    "message_id": msg.id,
-                }
+                # Case 2: Message has shortened links — resolve them
+                if needs_link_resolution(msg):
+                    links = get_message_links(msg)
+                    for link in links:
+                        if is_shortened_url(link) or is_telegram_link(link):
+                            if progress_cb:
+                                await progress_cb(
+                                    f"🔗 Found link in **{ch_title}**\n"
+                                    f"🔓 Resolving..."
+                                )
+                            resolved = await resolve_link(ub, link, progress_cb)
+                            if resolved and resolved.get("file_id"):
+                                await _save_to_cache(
+                                    slug,
+                                    resolved["file_id"],
+                                    resolved.get("file_name", ""),
+                                    ch_id or 0, ch_title,
+                                    msg.id,
+                                    resolved.get("file_size", 0),
+                                )
+                                if progress_cb:
+                                    await progress_cb(f"✅ Found in **{ch_title}**!")
+                                resolved["channel_id"] = ch_id
+                                resolved["channel_title"] = ch_title
+                                resolved["message_id"] = msg.id
+                                return resolved
 
             log.debug("Global search query '%s': checked %d results", hindi_query, count)
 
