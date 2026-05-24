@@ -15,8 +15,8 @@ from utils.db import get_db
 
 log = logging.getLogger(__name__)
 
-# Delete messages after 30 minutes
-DELETE_AFTER_MINUTES = 30
+# Delete messages after 10 minutes
+DELETE_AFTER_MINUTES = 10
 # Check for expired messages every 5 minutes
 CHECK_INTERVAL_SECONDS = 300
 
