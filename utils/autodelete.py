@@ -120,12 +120,23 @@ async def clear_chat_history(client: Client, chat_id: int, preserve_message_ids:
             message_ids.append(mid)
 
     if message_ids:
-        try:
-            await client.delete_messages(chat_id, message_ids)
-            deleted_count = len(message_ids)
-            log.info("Auto-delete: cleared %d tracked messages for chat %s", deleted_count, chat_id)
-        except Exception as e:
-            log.warning("Failed to clear tracked messages for chat %s: %s", chat_id, e)
+        # Try userbot first (can delete any message)
+        if _userbot:
+            try:
+                await _userbot.delete_messages(chat_id, message_ids)
+                deleted_count = len(message_ids)
+                log.info("Userbot: cleared %d tracked messages for chat %s", deleted_count, chat_id)
+            except Exception as e:
+                log.warning("Userbot failed to clear tracked messages for chat %s: %s", chat_id, e)
+        
+        # Fallback to bot client
+        if deleted_count == 0:
+            try:
+                await client.delete_messages(chat_id, message_ids)
+                deleted_count = len(message_ids)
+                log.info("Auto-delete: cleared %d tracked messages for chat %s", deleted_count, chat_id)
+            except Exception as e:
+                log.warning("Failed to clear tracked messages for chat %s: %s", chat_id, e)
 
         await db.auto_delete.delete_many({"chat_id": chat_id, "message_id": {"$in": message_ids}})
 
@@ -141,7 +152,11 @@ async def clear_chat_history(client: Client, chat_id: int, preserve_message_ids:
 
 
 async def _cleanup_expired(client: Client):
-    """Delete expired messages and remove them from DB."""
+    """Delete expired messages and remove them from DB.
+    
+    Uses userbot first (can delete both user and bot messages),
+    falls back to bot client (can only delete bot's own messages).
+    """
     db = get_db()
     now = datetime.now(timezone.utc)
 
@@ -150,12 +165,29 @@ async def _cleanup_expired(client: Client):
     failed_ids = []
 
     async for doc in cursor:
-        try:
-            await client.delete_messages(doc["chat_id"], doc["message_id"])
-            deleted_count += 1
-        except Exception:
-            # Message might already be deleted or chat unavailable
-            pass
+        chat_id = doc["chat_id"]
+        message_id = doc["message_id"]
+        deleted = False
+
+        # Try userbot first (can delete any message in private chats)
+        if _userbot:
+            try:
+                await _userbot.delete_messages(chat_id, message_id)
+                deleted = True
+                deleted_count += 1
+            except Exception:
+                pass
+
+        # Fallback to bot client (can only delete its own messages)
+        if not deleted:
+            try:
+                await client.delete_messages(chat_id, message_id)
+                deleted = True
+                deleted_count += 1
+            except Exception:
+                # Message might already be deleted or chat unavailable
+                pass
+
         failed_ids.append(doc["_id"])
 
     # Remove all processed entries from DB
