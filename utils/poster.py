@@ -29,12 +29,16 @@ async def download_poster(url: str) -> str | None:
     Caller is responsible for deleting the file.
     """
     if not url:
+        log.warning("download_poster called with empty URL")
         return None
 
+    log.info("Downloading poster from: %s", url[:80])
+
     try:
-        timeout = aiohttp.ClientTimeout(total=10)
+        timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(headers=_HEADERS, timeout=timeout) as session:
             async with session.get(url) as resp:
+                log.info("Poster download response: HTTP %d, content-type=%s", resp.status, resp.content_type)
                 if resp.status != 200:
                     log.warning("Poster download failed: HTTP %d for %s", resp.status, url)
                     return None

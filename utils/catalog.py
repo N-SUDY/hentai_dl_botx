@@ -77,6 +77,7 @@ async def update_catalog(
     poster_url: str,
     tags: list[str],
 ) -> dict | None:
+    log.info("update_catalog called for %s with poster_url=%s", slug, poster_url[:80] if poster_url else "NONE")
     """
     Update the series catalog after a successful episode download.
 

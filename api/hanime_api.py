@@ -181,6 +181,11 @@ class HanimeAPI:
         video_id = video.get("id")
         tags     = [t.get("text", "") for t in video.get("hentai_tags", [])]
         desc     = unescape(re.sub(r'<[^>]+>', '', video.get("description", ""))).strip()
+        
+        # Debug: log all available image fields
+        log.info(f"API fields for {slug}: poster_url={video.get('poster_url', 'NONE')[:60] if video.get('poster_url') else 'NONE'}, "
+                 f"cover_url={video.get('cover_url', 'NONE')[:60] if video.get('cover_url') else 'NONE'}, "
+                 f"poster={video.get('poster', 'NONE')[:60] if video.get('poster') else 'NONE'}")
 
         # Step 2: get real streams from signed manifest
         streams = []
@@ -208,6 +213,14 @@ class HanimeAPI:
                 'poster_url':ep.get('poster_url', ''),
             })
 
+        # Build poster URL with multiple fallbacks
+        poster_url = (video.get('poster_url') or 
+                      video.get('cover_url') or 
+                      video.get('poster') or 
+                      '')
+        
+        log.info(f"Resolved poster for {slug}: {poster_url[:80] if poster_url else 'NONE'}")
+        
         return {
             'id':           video_id,
             'slug':         video.get('slug', slug),
@@ -215,8 +228,9 @@ class HanimeAPI:
             'title':        video.get('name', slug.replace('-', ' ').title()),
             'description':  desc,
             'summary':      desc,
-            'poster_url':   video.get('poster_url', ''),
+            'poster_url':   poster_url,
             'cover_url':    video.get('cover_url', ''),
+            'poster':       video.get('poster', ''),
             'cover':        video.get('cover_url', ''),
             'tags':         tags,
             'genres':       tags,
