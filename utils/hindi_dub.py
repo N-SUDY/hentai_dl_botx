@@ -92,42 +92,81 @@ def _normalize_title(title: str) -> str:
 
 def _build_search_queries(slug: str, name: str = "") -> list[str]:
     """
-    Build search queries from slug and name.
-    E.g. "ane-yome-quartet-1" → ["ane yome quartet 1", "ane yome quartet", "ane yome quartet hindi"]
+    Build search queries from slug and name — SHORT and FLEXIBLE.
+    Channels often use abbreviated or different names, so we generate
+    multiple short variations to maximize match chances.
+
+    E.g. "showtime-uta-no-onee-san-datte-shitai-season-1" →
+      ["showtime uta no onee san", "showtime", "uta no onee san",
+       "showtime hindi", "uta no onee san hindi", ...]
     """
     queries = []
 
-    # From slug
+    # From slug — full text
     slug_text = slug.replace("-", " ").strip()
-    queries.append(slug_text)
 
-    # Without episode number
+    # Strip trailing episode/season numbers
+    # "showtime-uta-no-onee-san-datte-shitai-season-1" → series + ep
+    ep_num = ""
+    series_text = slug_text
     parts = slug.rsplit("-", 1)
     if len(parts) == 2 and parts[1].isdigit():
-        series = parts[0].replace("-", " ")
         ep_num = parts[1]
-        queries.append(f"{series} {ep_num}")
-        queries.append(f"{series} episode {ep_num}")
-        queries.append(series)
+        series_text = parts[0].replace("-", " ")
+
+    # Also strip "season X" from series text
+    series_clean = re.sub(r'\s+season\s*\d*', '', series_text, flags=re.IGNORECASE).strip()
 
     # From display name
+    name_clean = ""
     if name:
-        norm = _normalize_title(name)
-        if norm and norm not in queries:
-            queries.append(norm)
+        name_clean = _normalize_title(name)
+        # Strip episode numbers from name too
+        name_clean = re.sub(r'\s+\d+$', '', name_clean).strip()
+        name_clean = re.sub(r'\s+season\s*\d*', '', name_clean, flags=re.IGNORECASE).strip()
+        name_clean = re.sub(r'\s+episode\s*\d*', '', name_clean, flags=re.IGNORECASE).strip()
 
-    # Add "hindi" variants
+    # Build query list — SHORT queries first (more likely to match)
+    # 1. First 3-4 significant words of the title (most distinctive part)
+    words = series_clean.split()
+    if len(words) > 4:
+        queries.append(" ".join(words[:4]))  # First 4 words
+        queries.append(" ".join(words[:3]))  # First 3 words
+    if len(words) > 2:
+        queries.append(" ".join(words[:3]))
+
+    # 2. Full series name (without season/ep)
+    queries.append(series_clean)
+
+    # 3. Name from API (often cleaner)
+    if name_clean and name_clean != series_clean:
+        name_words = name_clean.split()
+        if len(name_words) > 4:
+            queries.append(" ".join(name_words[:4]))
+        queries.append(name_clean)
+
+    # 4. With episode number
+    if ep_num:
+        queries.append(f"{series_clean} {ep_num}")
+        if name_clean:
+            queries.append(f"{name_clean} {ep_num}")
+
+    # 5. Hindi variants of the best queries
     hindi_queries = []
-    for q in queries[:3]:  # Limit to avoid too many searches
+    for q in queries[:4]:
         hindi_queries.append(f"{q} hindi")
-        hindi_queries.append(f"{q} hindi dub")
     queries.extend(hindi_queries)
+
+    # 6. Just the first 2 words (very broad fallback)
+    if len(words) >= 2:
+        queries.append(" ".join(words[:2]))
 
     # Deduplicate while preserving order
     seen = set()
     unique = []
     for q in queries:
-        if q not in seen:
+        q = q.strip()
+        if q and q not in seen:
             seen.add(q)
             unique.append(q)
 
@@ -381,11 +420,14 @@ async def _broad_search(
                 if ch_id and ch_id not in checked_channels:
                     checked_channels.add(ch_id)
 
-                # Basic relevance check on caption/text
+                # Basic relevance check — at least 2 key words must match
                 caption_text = (msg.caption or "").lower() + " " + (msg.text or "").lower()
                 slug_words = slug.replace("-", " ").lower().split()
-                matches = sum(1 for w in slug_words if w in caption_text)
-                if matches < len(slug_words) * 0.4:
+                # Filter out common stop words
+                stop_words = {"no", "wa", "to", "de", "ni", "the", "a", "in", "of", "and", "or", "season", "episode"}
+                key_words = [w for w in slug_words if w not in stop_words and len(w) > 2]
+                matches = sum(1 for w in key_words if w in caption_text)
+                if matches < min(2, len(key_words)):
                     continue
 
                 # Case 1: Direct video file
