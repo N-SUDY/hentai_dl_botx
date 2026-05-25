@@ -20,7 +20,7 @@ from pyrogram.types import (
 
 from utils.db import get_db
 from utils.fsub import check_force_sub, send_force_sub_message
-from utils.autodelete import track_message, clear_chat_history
+from utils.autodelete import schedule_chat_wipe, cancel_chat_wipe
 
 log = logging.getLogger(__name__)
 
@@ -110,9 +110,8 @@ async def start_command(client: Client, message: Message):
     chat_id = message.chat.id
     user_message_id = message.id
 
-    # Logic workflow: track user's /start message for auto-delete (10 min)
-    # sender_type="user" so clear_chat_history won't delete it immediately
-    await track_message(chat_id, user_message_id, sender_type="user")
+    # Schedule full chat wipe after 10 minutes
+    await schedule_chat_wipe(chat_id)
 
     # Force-sub check FIRST
     passed, channel_id = await check_force_sub(client, user.id)
@@ -142,12 +141,8 @@ async def start_command(client: Client, message: Message):
         )
 
         log.info("Owner set up: user_id=%s username=%s", user.id, user.username)
-        welcome_msg = await _send_welcome(client, message.chat.id, OWNER_SETUP_TEXT)
-        if welcome_msg:
-            await track_message(chat_id, welcome_msg.id)
+        await _send_welcome(client, message.chat.id, OWNER_SETUP_TEXT)
         return
 
     # Regular /start
-    welcome_msg = await _send_welcome(client, message.chat.id, WELCOME_TEXT)
-    if welcome_msg:
-        await track_message(chat_id, welcome_msg.id)
+    await _send_welcome(client, message.chat.id, WELCOME_TEXT)
