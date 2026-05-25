@@ -448,17 +448,16 @@ async def resolve_bot_start(ub: Client, bot_username: str, start_param: str) -> 
 
 async def resolve_link(ub: Client, url: str, progress_cb=None) -> dict | None:
     """
-    Full link resolution pipeline:
-    1. If it's a Telegram link → resolve directly
-    2. If shortened → bypass via @Nick_Bypass_Bot → then resolve
-    3. Returns {file_id, file_name, file_size, source} or None
+    Resolve a single URL to a video file.
+    - t.me links → resolve directly (channel msg or bot start)
+    - Shortened links → bypass via @Nick_Bypass_Bot → then resolve
     """
-    # Step 1: Check if it's already a Telegram link
+    # Telegram link → resolve directly (don't send to bypass bot)
     tg = classify_telegram_link(url)
     if tg:
         return await _resolve_tg_link(ub, tg, progress_cb)
 
-    # Step 2: It's a shortened link — bypass it
+    # Shortened link → bypass first, then resolve
     if progress_cb:
         await progress_cb("🔓 Bypassing shortened link...")
 
@@ -467,14 +466,61 @@ async def resolve_link(ub: Client, url: str, progress_cb=None) -> dict | None:
         log.info("Link bypass failed for: %s", url[:80])
         return None
 
-    # Step 3: Resolve the bypassed URL
     tg = classify_telegram_link(bypassed_url)
     if tg:
         return await _resolve_tg_link(ub, tg, progress_cb)
 
-    # The bypassed URL is not a Telegram link — could be a direct download
-    # (we don't handle direct HTTP video downloads here for now)
     log.info("Bypassed URL is not a Telegram link: %s", bypassed_url[:80])
+    return None
+
+
+async def resolve_all_links(ub: Client, urls: list[str], progress_cb=None) -> dict | None:
+    """
+    Try to resolve ALL links from a message, not just the first one.
+    Tries each link in order — returns the first one that gives a video file.
+
+    Handles both t.me links (direct) and shortened links (via bypass bot).
+    """
+    if not urls:
+        return None
+
+    # Separate into telegram links and shortened links
+    tg_links = []
+    short_links = []
+    for url in urls:
+        if is_telegram_link(url):
+            tg_links.append(url)
+        elif is_shortened_url(url):
+            short_links.append(url)
+        else:
+            # Unknown — try as shortened
+            short_links.append(url)
+
+    # Try t.me links first (faster, no bypass needed)
+    for url in tg_links:
+        tg = classify_telegram_link(url)
+        if tg:
+            if progress_cb:
+                await progress_cb(f"📡 Trying Telegram link...")
+            result = await _resolve_tg_link(ub, tg, progress_cb)
+            if result:
+                return result
+            log.info("t.me link didn't resolve: %s", url[:80])
+
+    # Then try shortened links via bypass bot
+    for url in short_links:
+        if progress_cb:
+            await progress_cb(f"🔓 Bypassing shortened link...")
+        bypassed = await bypass_link(ub, url)
+        if not bypassed:
+            log.info("Bypass failed for: %s", url[:80])
+            continue
+        tg = classify_telegram_link(bypassed)
+        if tg:
+            result = await _resolve_tg_link(ub, tg, progress_cb)
+            if result:
+                return result
+
     return None
 
 

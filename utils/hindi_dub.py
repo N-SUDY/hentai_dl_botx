@@ -24,7 +24,7 @@ from pyrogram.enums import MessagesFilter
 
 from utils.db import get_hindi_db
 from utils.link_resolver import (
-    needs_link_resolution, get_message_links, resolve_link,
+    needs_link_resolution, get_message_links, resolve_all_links,
     is_shortened_url, is_telegram_link,
 )
 
@@ -351,32 +351,31 @@ async def _search_channel(
                                 "message_id": msg.id,
                             }
 
-                    # Case 2: Message has shortened links — resolve them
+                    # Case 2: Message has links — try ALL of them
                     if needs_link_resolution(msg):
                         links = get_message_links(msg)
-                        for link in links:
-                            if is_shortened_url(link) or is_telegram_link(link):
-                                log.info("Found shortened link in %s: %s",
-                                         channel_title, link[:80])
-                                if progress_cb:
-                                    await progress_cb(
-                                        f"🔗 Found link in **{channel_title}**\n"
-                                        f"🔓 Resolving..."
-                                    )
-                                resolved = await resolve_link(ub, link, progress_cb)
-                                if resolved and resolved.get("file_id"):
-                                    await _save_to_cache(
-                                        slug,
-                                        resolved["file_id"],
-                                        resolved.get("file_name", ""),
-                                        channel_id, channel_title,
-                                        msg.id,
-                                        resolved.get("file_size", 0),
-                                    )
-                                    resolved["channel_id"] = channel_id
-                                    resolved["channel_title"] = channel_title
-                                    resolved["message_id"] = msg.id
-                                    return resolved
+                        if links:
+                            log.info("Found %d links in %s — resolving all",
+                                     len(links), channel_title)
+                            if progress_cb:
+                                await progress_cb(
+                                    f"🔗 Found {len(links)} links in **{channel_title}**\n"
+                                    f"🔓 Trying all..."
+                                )
+                            resolved = await resolve_all_links(ub, links, progress_cb)
+                            if resolved and resolved.get("file_id"):
+                                await _save_to_cache(
+                                    slug,
+                                    resolved["file_id"],
+                                    resolved.get("file_name", ""),
+                                    channel_id, channel_title,
+                                    msg.id,
+                                    resolved.get("file_size", 0),
+                                )
+                                resolved["channel_id"] = channel_id
+                                resolved["channel_title"] = channel_title
+                                resolved["message_id"] = msg.id
+                                return resolved
 
             except Exception as e:
                 log.debug("Search failed in %s for '%s' (filter=%s): %s",
@@ -461,32 +460,31 @@ async def _broad_search(
                             "message_id": msg.id,
                         }
 
-                # Case 2: Message has shortened links — resolve them
+                # Case 2: Message has links — try ALL of them
                 if needs_link_resolution(msg):
                     links = get_message_links(msg)
-                    for link in links:
-                        if is_shortened_url(link) or is_telegram_link(link):
+                    if links:
+                        if progress_cb:
+                            await progress_cb(
+                                f"🔗 Found {len(links)} links in **{ch_title}**\n"
+                                f"🔓 Trying all..."
+                            )
+                        resolved = await resolve_all_links(ub, links, progress_cb)
+                        if resolved and resolved.get("file_id"):
+                            await _save_to_cache(
+                                slug,
+                                resolved["file_id"],
+                                resolved.get("file_name", ""),
+                                ch_id or 0, ch_title,
+                                msg.id,
+                                resolved.get("file_size", 0),
+                            )
                             if progress_cb:
-                                await progress_cb(
-                                    f"🔗 Found link in **{ch_title}**\n"
-                                    f"🔓 Resolving..."
-                                )
-                            resolved = await resolve_link(ub, link, progress_cb)
-                            if resolved and resolved.get("file_id"):
-                                await _save_to_cache(
-                                    slug,
-                                    resolved["file_id"],
-                                    resolved.get("file_name", ""),
-                                    ch_id or 0, ch_title,
-                                    msg.id,
-                                    resolved.get("file_size", 0),
-                                )
-                                if progress_cb:
-                                    await progress_cb(f"✅ Found in **{ch_title}**!")
-                                resolved["channel_id"] = ch_id
-                                resolved["channel_title"] = ch_title
-                                resolved["message_id"] = msg.id
-                                return resolved
+                                await progress_cb(f"✅ Found in **{ch_title}**!")
+                            resolved["channel_id"] = ch_id
+                            resolved["channel_title"] = ch_title
+                            resolved["message_id"] = msg.id
+                            return resolved
 
             log.debug("Global search query '%s': checked %d results", hindi_query, count)
 
