@@ -7,7 +7,6 @@ Sends a random welcome image from assets/welcome/.
 
 import logging
 import os
-import random
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +17,7 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
 )
 
+from pymongo import ReturnDocument
 from utils.db import get_db
 from utils.fsub import check_force_sub, send_force_sub_message
 from utils.autodelete import schedule_chat_wipe, cancel_chat_wipe
@@ -60,19 +60,39 @@ OWNER_SETUP_TEXT = (
 )
 
 
-def _get_random_welcome_image() -> str | None:
-    """Get a random welcome image path from assets/welcome/."""
+def _get_sorted_welcome_images() -> list[str]:
+    """Get all welcome images sorted numerically."""
     if not WELCOME_DIR.exists():
-        return None
+        return []
     images = list(WELCOME_DIR.glob("*.jpg")) + list(WELCOME_DIR.glob("*.png"))
     if not images:
+        return []
+    # Sort numerically by filename (1.jpg, 2.jpg, ..., 22.jpg)
+    images.sort(key=lambda p: int(p.stem) if p.stem.isdigit() else p.stem)
+    return [str(img) for img in images]
+
+
+async def _get_next_welcome_image() -> str | None:
+    """Get the next welcome image in sequence using a global counter in DB."""
+    images = _get_sorted_welcome_images()
+    if not images:
         return None
-    return str(random.choice(images))
+
+    db = get_db()
+    # Atomically increment and get the counter
+    result = await db.bot_state.find_one_and_update(
+        {"_id": "welcome_image_counter"},
+        {"$inc": {"count": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    index = (result["count"] - 1) % len(images)
+    return images[index]
 
 
 async def _send_welcome(client: Client, chat_id: int, text: str) -> Message | None:
-    """Send welcome message with a random image. Returns the sent message."""
-    img = _get_random_welcome_image()
+    """Send welcome message with the next image in sequence. Returns the sent message."""
+    img = await _get_next_welcome_image()
     msg = None
     if img:
         try:
