@@ -527,7 +527,7 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
             log.info("Cache hit for %s — sending existing file", slug)
             thumb_path = None
             try:
-                info = hanime_api.details(slug)
+                info = await asyncio.to_thread(hanime_api.details, slug)
                 tags_str = ", ".join(info.get("tags", [])[:5])
                 caption = (
                     f"{info['name']}\n"
@@ -573,7 +573,7 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
 
     # Fetch streams
     try:
-        data = hanime_api.get_streams(slug)
+        data = await asyncio.to_thread(hanime_api.get_streams, slug)
     except Exception:
         log.exception("Failed to fetch streams for slug=%s", slug)
         await _safe_edit(callback_query, "API unavailable. Please try again later.")
@@ -673,7 +673,7 @@ async def hentaidl(client: Client, callback_query: CallbackQuery):
         info = None
         thumb_path = None
         try:
-            info = hanime_api.details(slug)
+            info = await asyncio.to_thread(hanime_api.details, slug)
             series_name = _extract_series_name(slug)
             tags_str = ", ".join(info.get("tags", [])[:5])
             caption = (
@@ -779,7 +779,7 @@ async def batch_download(client: Client, callback_query: CallbackQuery):
 
     # Get episode list
     try:
-        info = hanime_api.details(slug)
+        info = await asyncio.to_thread(hanime_api.details, slug)
     except Exception:
         log.exception("Failed to get details for batch %s", slug)
         await callback_query.answer("API error", show_alert=True)
@@ -824,7 +824,7 @@ async def batch_download(client: Client, callback_query: CallbackQuery):
         if cached and cached.get("file_size", 0) > 50_000:
             ep_thumb = None
             try:
-                ep_info_c = hanime_api.details(ep_slug)
+                ep_info_c = await asyncio.to_thread(hanime_api.details, ep_slug)
                 thumb_url = ep_info_c.get("poster_url") or ep_info_c.get("cover_url") or ""
                 if thumb_url:
                     ep_thumb = await download_thumbnail(thumb_url)
@@ -850,7 +850,7 @@ async def batch_download(client: Client, callback_query: CallbackQuery):
 
         # Fresh download with progress
         try:
-            data = hanime_api.get_streams(ep_slug)
+            data = await asyncio.to_thread(hanime_api.get_streams, ep_slug)
         except Exception:
             log.error("Batch: stream fetch failed for %s", ep_slug)
             failed += 1
@@ -901,7 +901,7 @@ async def batch_download(client: Client, callback_query: CallbackQuery):
         ep_info = None
         ep_thumb = None
         try:
-            ep_info = hanime_api.details(ep_slug)
+            ep_info = await asyncio.to_thread(hanime_api.details, ep_slug)
             tags_str = ", ".join(ep_info.get("tags", [])[:5])
             caption = f"{ep_name}\nTags: {tags_str}\nDownloaded via @hanime_dl_bot"
             thumb_url = ep_info.get("poster_url") or ep_info.get("cover_url") or ""
@@ -928,7 +928,7 @@ async def batch_download(client: Client, callback_query: CallbackQuery):
             try:
                 ep_info = None
                 try:
-                    ep_info = hanime_api.details(ep_slug)
+                    ep_info = await asyncio.to_thread(hanime_api.details, ep_slug)
                 except Exception:
                     pass
                 

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import traceback
@@ -66,7 +67,7 @@ async def infohentai(client: Client, callback_query: CallbackQuery):
 
     try:
         log.info("Fetching details for %s...", slug)
-        info = hanime_api.details(slug)
+        info = await asyncio.to_thread(hanime_api.details, slug)
         if not info:
             raise ValueError(f"No details found for slug={slug}")
         log.info("Got details: name=%s, episodes=%d, poster=%s",
@@ -155,7 +156,7 @@ async def episode_info(client: Client, callback_query: CallbackQuery):
         pass
 
     try:
-        info = hanime_api.details(slug)
+        info = await asyncio.to_thread(hanime_api.details, slug)
         if not info:
             raise ValueError(f"No details found for slug={slug}")
     except Exception:
@@ -177,7 +178,7 @@ async def episode_info(client: Client, callback_query: CallbackQuery):
     # Get episode info to check if series has multiple episodes
     series_info = None
     try:
-        series_info = hanime_api.details(slug)
+        series_info = await asyncio.to_thread(hanime_api.details, slug)
     except Exception:
         pass
     

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from pyrogram import Client
@@ -37,7 +38,7 @@ async def hentaisearch(client: Client, message: Message):
     await log_search(client, message.from_user.username, query)
 
     try:
-        results = hanime_api.search(query)
+        results = await asyncio.to_thread(hanime_api.search, query)
     except Exception:
         log.exception("Search failed for query=%s", query)
         msg = await message.reply_text("❌ Search API is currently unavailable. Please try again later.")
