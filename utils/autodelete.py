@@ -60,49 +60,40 @@ async def _wipe_chat(chat_id: int):
     log.info("Wiping chat %s: %d tracked messages: %s", chat_id, len(msg_ids), msg_ids)
     deleted = 0
 
-    # Use raw MTProto DeleteMessages through the bot — gives us actual result
-    from pyrogram.raw.functions.messages import DeleteMessages
-
     for i in range(0, len(msg_ids), 100):
         batch = msg_ids[i:i + 100]
+        batch_deleted = False
 
-        # Try via bot (raw API)
-        if _bot:
+        # Try bot's high-level delete_messages (properly resolves peer + chat_id)
+        if _bot and not batch_deleted:
             try:
-                result = await _bot.invoke(DeleteMessages(id=batch, revoke=True))
-                pts = getattr(result, "pts_count", 0)
-                log.info("Bot raw DeleteMessages for chat %s: pts_count=%s (batch=%s)",
-                         chat_id, pts, batch)
-                deleted += pts
-                if pts > 0:
-                    continue
-            except Exception as e:
-                log.warning("Bot raw DeleteMessages failed for chat %s: %s", chat_id, e)
-
-        # Try via userbot (raw API)
-        if _userbot:
-            try:
-                result = await _userbot.invoke(DeleteMessages(id=batch, revoke=True))
-                pts = getattr(result, "pts_count", 0)
-                log.info("Userbot raw DeleteMessages for chat %s: pts_count=%s (batch=%s)",
-                         chat_id, pts, batch)
-                deleted += pts
-                if pts > 0:
-                    continue
-            except Exception as e:
-                log.warning("Userbot raw DeleteMessages failed for chat %s: %s", chat_id, e)
-
-        # Try high-level API as last resort
-        for client_name, client in [("bot", _bot), ("userbot", _userbot)]:
-            if not client:
-                continue
-            try:
-                await client.delete_messages(chat_id, batch)
-                log.info("%s high-level delete_messages for chat %s batch=%s", client_name, chat_id, batch)
+                count = await _bot.delete_messages(chat_id, batch)
+                log.info("Bot delete_messages for chat %s: result=%s (batch=%s)",
+                         chat_id, count, batch)
                 deleted += len(batch)
-                break
+                batch_deleted = True
             except Exception as e:
-                log.warning("%s high-level delete failed for chat %s: %s", client_name, chat_id, e)
+                log.warning("Bot delete_messages failed for chat %s: %s", chat_id, e)
+
+        # Fallback: try userbot
+        if _userbot and not batch_deleted:
+            try:
+                count = await _userbot.delete_messages(chat_id, batch, revoke=True)
+                log.info("Userbot delete_messages for chat %s: result=%s (batch=%s)",
+                         chat_id, count, batch)
+                deleted += len(batch)
+                batch_deleted = True
+            except Exception as e:
+                log.warning("Userbot delete_messages failed for chat %s: %s", chat_id, e)
+
+        # Last resort: delete one by one via bot
+        if _bot and not batch_deleted:
+            for mid in batch:
+                try:
+                    await _bot.delete_messages(chat_id, mid)
+                    deleted += 1
+                except Exception as e:
+                    log.warning("Bot single delete failed for chat %s msg %s: %s", chat_id, mid, e)
 
     log.info("Chat wipe done for %s: deleted %d messages (tracked %d)", chat_id, deleted, len(msg_ids))
 
